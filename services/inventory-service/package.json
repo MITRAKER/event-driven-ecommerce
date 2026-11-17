@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "start": "SERVICE_NAME=inventory-service DATABASE_URL=${DATABASE_URL:-postgres://shop:shop@localhost:5432/inventory} node dist/main.js",
+    "start": "SERVICE_NAME=inventory-service PORT=${PORT:-3002} DATABASE_URL=${DATABASE_URL:-postgres://shop:shop@localhost:5432/inventory} node dist/main.js",
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json"
   },
