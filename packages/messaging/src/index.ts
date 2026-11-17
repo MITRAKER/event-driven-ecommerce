@@ -5,3 +5,4 @@ export * from './inbox';
 export * from './outbox.repository';
 export * from './outbox.relay';
 export * from './event.consumer';
+export * from './retry';
