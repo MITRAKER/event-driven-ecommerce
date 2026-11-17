@@ -1,4 +1,4 @@
-import { Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { EventType, InvalidEventError, parseEvent, ShopEvent, Topic } from '@shop/contracts';
 import { Consumer, KafkaMessage, Producer } from 'kafkajs';
 import { PoolClient } from 'pg';
@@ -34,7 +34,12 @@ export function decodeMessage(value: Buffer): ShopEvent {
  * switch (JPL rule 9: no tables of function pointers, so the call graph stays static).
  * Duplicates are skipped by claimEvent(); event types not in handledTypes are ignored,
  * which lets producers add new events without breaking old consumers.
+ *
+ * @Injectable() here makes TypeScript record this constructor's parameter types. Nest reads
+ * them through the prototype chain, so a subclass that needs nothing extra can skip writing
+ * a constructor at all.
  */
+@Injectable()
 export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleDestroy {
   protected readonly logger = new Logger(this.constructor.name);
   private consumer: Consumer | undefined;
