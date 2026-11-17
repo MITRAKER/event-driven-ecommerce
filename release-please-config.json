@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "refactor", "section": "Refactoring" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "build", "section": "Build and Dependencies" },
+    { "type": "ci", "section": "CI/CD" },
+    { "type": "test", "section": "Tests" }
+  ],
+  "packages": {
+    ".": {
+      "package-name": "event-driven-ecommerce",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

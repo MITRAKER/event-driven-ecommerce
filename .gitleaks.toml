@@ -1,0 +1,19 @@
+# gitleaks configuration: scan with all of gitleaks' built-in rules, plus one narrow exception.
+# https://github.com/gitleaks/gitleaks#configuration
+
+title = "event-driven-ecommerce"
+
+[extend]
+# Keep every default rule (API keys, tokens, private keys, ...).
+useDefault = true
+
+[allowlist]
+description = "Throwaway local-dev Postgres credentials: user and password are both 'shop'"
+# Match against the whole line, and only lines that use exactly these dev credentials,
+# such as postgres://shop:shop@localhost:5432/orders in docker-compose.yml, the services'
+# package.json start scripts and the docs. Any other credential is still reported.
+regexTarget = "line"
+regexes = [
+  '''postgres(ql)?://shop:shop@''',
+  '''POSTGRES_PASSWORD:\s*shop\s*$''',
+]

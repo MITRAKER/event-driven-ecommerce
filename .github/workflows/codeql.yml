@@ -1,0 +1,39 @@
+# CodeQL: GitHub's semantic code analysis (security and code-quality queries).
+# Runs on every PR and also every day (JPL rule 10: run static analysers daily), because new
+# queries are added all the time and code that was clean yesterday can be flagged today.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 4 * * *' # every day at 04:23 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write # upload the results to the Security tab
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # JavaScript and TypeScript are analysed from the source; no build needed.
+          build-mode: none
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'

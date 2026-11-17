@@ -1,11 +1,24 @@
 # Infra only:   docker compose up -d redpanda redpanda-console postgres
-# Everything:   docker compose up -d --build
+# Everything:   docker compose up -d --build --wait
+#               (--wait returns once every health check passes, so the system is really ready)
+#
+# The Postgres user and password ("shop") are throwaway local-development values.
+# .gitleaks.toml allowlists exactly these, so a real secret would still be caught.
+
+# Shared settings for the four app services (a YAML anchor, merged in with `<<: *service`).
 x-service: &service
-  build: { context: ., dockerfile: Dockerfile }
   restart: unless-stopped
   depends_on:
     redpanda: { condition: service_healthy }
     postgres: { condition: service_healthy }
+
+# Shared health check timing. Each service adds its own `test` with its own port.
+# start_period gives Node time to boot before failures count; retries x interval bounds the wait.
+x-healthcheck: &healthcheck
+  interval: 5s
+  timeout: 3s
+  retries: 30
+  start_period: 10s
 
 services:
   redpanda:
@@ -29,7 +42,8 @@ services:
     environment:
       KAFKA_BROKERS: redpanda:9092
     ports: ['8080:8080']
-    depends_on: [redpanda]
+    depends_on:
+      redpanda: { condition: service_healthy }
 
   postgres:
     image: postgres:16-alpine
@@ -40,33 +54,59 @@ services:
     volumes:
       - ./infra/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U shop']
+      # Check over TCP, not the Unix socket. On first start the image runs init.sql on a
+      # temporary server that only listens on the socket, so a socket check says "ready"
+      # before the databases exist. order_query is the last database init.sql creates.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U shop -d order_query']
       interval: 3s
       retries: 30
 
+  # Each service's health check calls GET /health, which runs SELECT 1 against its database.
+  # node:22-alpine has no curl, but busybox provides wget.
   order-service:
     <<: *service
     build: { context: ., args: { SERVICE: order-service } }
-    environment: { KAFKA_BROKERS: 'redpanda:9092', DATABASE_URL: 'postgres://shop:shop@postgres:5432/orders' }
+    environment:
+      PORT: '3001'
+      KAFKA_BROKERS: 'redpanda:9092'
+      DATABASE_URL: 'postgres://shop:shop@postgres:5432/orders'
     ports: ['3001:3001']
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/health || exit 1']
 
   inventory-service:
     <<: *service
     build: { context: ., args: { SERVICE: inventory-service } }
     environment:
-      { KAFKA_BROKERS: 'redpanda:9092', DATABASE_URL: 'postgres://shop:shop@postgres:5432/inventory' }
+      PORT: '3002'
+      KAFKA_BROKERS: 'redpanda:9092'
+      DATABASE_URL: 'postgres://shop:shop@postgres:5432/inventory'
     ports: ['3002:3002']
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3002/health || exit 1']
 
   payment-service:
     <<: *service
     build: { context: ., args: { SERVICE: payment-service } }
     environment:
-      { KAFKA_BROKERS: 'redpanda:9092', DATABASE_URL: 'postgres://shop:shop@postgres:5432/payments' }
+      PORT: '3003'
+      KAFKA_BROKERS: 'redpanda:9092'
+      DATABASE_URL: 'postgres://shop:shop@postgres:5432/payments'
     ports: ['3003:3003']
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3003/health || exit 1']
 
   order-query-service:
     <<: *service
     build: { context: ., args: { SERVICE: order-query-service } }
     environment:
-      { KAFKA_BROKERS: 'redpanda:9092', DATABASE_URL: 'postgres://shop:shop@postgres:5432/order_query' }
+      PORT: '3004'
+      KAFKA_BROKERS: 'redpanda:9092'
+      DATABASE_URL: 'postgres://shop:shop@postgres:5432/order_query'
     ports: ['3004:3004']
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3004/health || exit 1']
