@@ -1,5 +1,14 @@
-import { Controller, Get, NotFoundException, Param, ParseUUIDPipe } from '@nestjs/common';
-import { OrderViewRepository } from './order-view.repository';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  NotFoundException,
+  Param,
+  ParseUUIDPipe,
+} from '@nestjs/common';
+import { Limits } from '@shop/contracts';
+import { OrderViewRepository, StatusStats } from './order-view.repository';
+import { OrderView } from './projection';
 
 /** The query side of CQRS: read-only endpoints, served from the projection. */
 @Controller()
@@ -8,21 +17,25 @@ export class QueriesController {
 
   /** Order tracking page: status, what inventory and payment said, and the full event timeline. */
   @Get('orders/:id')
-  async order(@Param('id', ParseUUIDPipe) id: string) {
+  async order(@Param('id', ParseUUIDPipe) id: string): Promise<OrderView> {
     const view = await this.views.byId(id);
-    if (!view) throw new NotFoundException(`order ${id} not found (it may not be projected yet)`);
+    if (view === null) throw new NotFoundException(`order ${id} not found (it may not be projected yet)`);
     return view;
   }
 
-  /** "My orders" page. */
+  /** "My orders" page: the customer's latest orders. */
   @Get('customers/:customerId/orders')
-  customerOrders(@Param('customerId') customerId: string) {
-    return this.views.byCustomer(customerId);
+  async customerOrders(@Param('customerId') customerId: string): Promise<OrderView[]> {
+    // Validate at the boundary (JPL rule 7), with the same bound POST /orders uses.
+    if (customerId.length > Limits.maxCustomerIdLength) {
+      throw new BadRequestException(`customerId must be 1..${Limits.maxCustomerIdLength} characters`);
+    }
+    return await this.views.byCustomer(customerId);
   }
 
   /** A tiny admin dashboard: orders and revenue by status. */
   @Get('stats')
-  stats() {
-    return this.views.stats();
+  async stats(): Promise<StatusStats[]> {
+    return await this.views.stats();
   }
 }

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "start": "SERVICE_NAME=order-query-service DATABASE_URL=${DATABASE_URL:-postgres://shop:shop@localhost:5432/order_query} node dist/main.js",
+    "start": "SERVICE_NAME=order-query-service PORT=${PORT:-3004} DATABASE_URL=${DATABASE_URL:-postgres://shop:shop@localhost:5432/order_query} node dist/main.js",
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json"
   },
