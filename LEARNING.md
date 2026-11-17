@@ -37,3 +37,58 @@ docker compose exec redpanda rpk topic produce orders --key order-1
 docker compose exec redpanda rpk topic consume orders
 ```
 Exercise: produce three messages with key `order-1` and three with key `order-2`, and check in the Console which partition each landed in.
+
+---
+
+## Step 2: Order service and the transactional outbox
+
+### What we built
+```
+packages/contracts/          shared TypeScript types for every event + createEvent() helper
+services/order-service/
+  migrations/001_init.sql    orders table + outbox table
+  src/orders/                POST /orders, GET /orders/:id
+  src/outbox/                addToOutbox() + OutboxRelay (outbox table -> Kafka)
+  src/infra/                 Postgres pool with transaction() helper, Kafka producer
+```
+Flow: `POST /orders` -> one DB transaction inserts the order **and** an outbox row -> the relay (every 500 ms) reads unpublished outbox rows -> sends them to the `orders` topic -> marks them published.
+
+### The problem this solves: the dual write
+The naive version looks like this:
+```ts
+await db.query('INSERT INTO orders ...');
+await kafka.send('OrderCreated');   // what if the process dies right here, or Kafka is down?
+```
+Two separate systems, two separate writes, and no way to make them atomic. If the app crashes between the lines, the order exists but no other service ever hears about it. Swap the order of the lines and you can announce an order that was never saved. This is the **dual-write problem**, and it is one of the most common interview questions about event-driven systems.
+
+### The fix: the transactional outbox
+Write the event into a table *in the same database transaction* as the order (`orders.service.ts`). A database transaction is atomic, so either both rows exist or neither does. A separate background loop (`outbox.relay.ts`) then copies outbox rows to Kafka. If Kafka is down, rows simply wait in the table and get sent later. Nothing is lost.
+
+### Design choices worth understanding
+- **`FOR UPDATE SKIP LOCKED`** in the relay query. If you run three copies of the service, each relay locks a different batch of rows instead of all three sending the same events. This is a classic Postgres job-queue trick.
+- **`ORDER BY id`** with a `BIGSERIAL` id preserves the order in which events were created.
+- **At-least-once delivery.** If the relay crashes *after* Kafka accepted a batch but *before* the `UPDATE ... published_at`, that batch is sent again. You cannot get exactly-once for free across two systems, so the rule is: **producers may duplicate, and consumers must be idempotent.** We build idempotent consumers in Step 3.
+- **Idempotent producer** (`idempotent: true` in `kafka.ts`). This stops duplicates caused by the Kafka client's own network retries. It does *not* cover the crash case above, which is why consumer idempotency still matters.
+- **HTTP 202 Accepted** instead of 201. The order is accepted, but whether it ends up confirmed or cancelled is decided later by other services. The client polls `GET /orders/:id` (or, later, the query service).
+- **Plain SQL instead of an ORM.** For learning, seeing the exact `BEGIN / INSERT / INSERT / COMMIT` makes the pattern obvious. In a bigger codebase you might use Prisma or TypeORM. The pattern stays the same.
+- **A shared `@shop/contracts` package.** Every service imports the same event types, so if a payload changes, the TypeScript compiler shows every place that breaks.
+
+### Alternatives you should be able to name
+- **Change Data Capture (CDC)** with Debezium. Instead of polling, Debezium reads Postgres's write-ahead log and streams outbox inserts to Kafka. It has lower latency and no polling load, but there's one more piece of infrastructure to run.
+- **Listen to yourself.** Publish to Kafka first, and have the service consume its own event to update its database. It works, but the API can't immediately read back what it just wrote.
+
+### How the tests prove it (`npm test -w @shop/order-service`)
+- `orders.service.spec.ts`: the order insert and the outbox insert happen in the same transaction. The event's message key is the order id. If the order insert fails, no event is staged.
+- `outbox.relay.spec.ts`: rows are grouped by topic and marked published. **If Kafka is down, rows stay unpublished and get retried.** No outbox rows means no Kafka call.
+
+### Try it yourself
+```bash
+docker compose up -d
+npm install && npm run build
+npm start -w @shop/order-service
+curl -X POST localhost:3001/orders -H 'content-type: application/json' \
+  -d '{"customerId":"c-1","items":[{"sku":"BOOK","quantity":2,"unitPriceCents":1500}]}'
+```
+Watch the `orders` topic in Redpanda Console (http://localhost:8080).
+
+Exercise: stop Kafka (`docker compose stop redpanda`), create three orders, then run `SELECT id, published_at FROM outbox;` in the `orders` database. Start Kafka again and watch the relay catch up. That's the outbox doing its job.
