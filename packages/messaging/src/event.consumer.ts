@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { EventType, InvalidEventError, parseEvent, ShopEvent, Topic } from '@shop/contracts';
-import { Consumer, KafkaMessage, Producer } from 'kafkajs';
+import { Consumer, KafkaMessage, Partitioners, Producer } from 'kafkajs';
 import { PoolClient } from 'pg';
 import { MessagingConfig } from './config';
 import { Database } from './database';
@@ -61,7 +61,12 @@ export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleD
 
   async onApplicationBootstrap(): Promise<void> {
     await this.kafka.ensureTopics();
-    this.dlqProducer = this.kafka.kafka.producer({ retry: { retries: 5 } });
+    // The same partitioner as KafkaProducer. Naming it also stops kafkajs from logging a warning
+    // about the default it switched to in v2.
+    this.dlqProducer = this.kafka.kafka.producer({
+      retry: { retries: 5 },
+      createPartitioner: Partitioners.DefaultPartitioner,
+    });
     await this.dlqProducer.connect();
     this.consumer = this.kafka.kafka.consumer({ groupId: this.groupId });
     await this.consumer.connect();
