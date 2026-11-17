@@ -16,8 +16,17 @@ export interface OrderView {
 
 export function emptyView(orderId: string, at: string): OrderView {
   return {
-    orderId, customerId: null, status: 'PENDING', totalCents: null, items: null,
-    inventoryStatus: null, paymentStatus: null, cancelReason: null, timeline: [], createdAt: null, updatedAt: at,
+    orderId,
+    customerId: null,
+    status: 'PENDING',
+    totalCents: null,
+    items: null,
+    inventoryStatus: null,
+    paymentStatus: null,
+    cancelReason: null,
+    timeline: [],
+    createdAt: null,
+    updatedAt: at,
   };
 }
 

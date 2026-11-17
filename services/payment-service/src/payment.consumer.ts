@@ -16,10 +16,12 @@ export class PaymentConsumer extends EventConsumer {
     const amountCents = items.reduce((sum, i) => sum + i.quantity * i.unitPriceCents, 0);
 
     const result = charge(amountCents);
-    await tx.query(
-      `INSERT INTO payments (order_id, amount_cents, status, reason) VALUES ($1, $2, $3, $4)`,
-      [orderId, amountCents, result.ok ? 'SUCCEEDED' : 'FAILED', result.ok ? null : result.reason],
-    );
+    await tx.query(`INSERT INTO payments (order_id, amount_cents, status, reason) VALUES ($1, $2, $3, $4)`, [
+      orderId,
+      amountCents,
+      result.ok ? 'SUCCEEDED' : 'FAILED',
+      result.ok ? null : result.reason,
+    ]);
     const outcome = result.ok
       ? createEvent<PaymentSucceeded>('PaymentSucceeded', orderId, { orderId, amountCents }, event)
       : createEvent<PaymentFailed>('PaymentFailed', orderId, { orderId, reason: result.reason }, event);

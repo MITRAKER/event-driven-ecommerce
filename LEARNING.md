@@ -7,6 +7,7 @@ This file grows with every step. Each section covers what was built, why it was 
 ## Step 1: Local infrastructure and event contracts
 
 ### What we built
+
 - `docker-compose.yml` starts three things:
   - **Redpanda**, a Kafka-compatible message broker. It is a single binary with no ZooKeeper, so it is much lighter on a laptop than real Kafka. Your code uses normal Kafka client libraries, so everything you learn applies to Kafka.
   - **Redpanda Console** at http://localhost:8080, a web UI where you can watch topics and messages flow. Seeing events with your own eyes is the fastest way to learn.
@@ -14,21 +15,24 @@ This file grows with every step. Each section covers what was built, why it was 
 - `contracts/events/` holds the **event envelope** schema and the **event catalog** (which service sends which event, and who listens).
 
 ### Why it is designed this way
+
 1. **One database per service.** In microservices, each service owns its data. The inventory service may never read the orders table directly. If it needs order information, it learns it from events. This keeps services independent, so you can deploy, scale, or rewrite one without breaking the others. (In production these would be separate servers; one Postgres with four databases is a cheap way to simulate that.)
 2. **Contracts first, code second.** Events are the public API between services. Writing them down before any code forces you to design the conversation between services, just like designing REST endpoints before implementing them.
 3. **A shared envelope.** Every event carries the same metadata:
    - `eventId`: a unique id. Consumers store the ids they have processed, so if Kafka delivers the same message twice (it can!), they skip it. This is called **idempotency**.
    - `version`: lets you change an event's shape later without breaking old consumers.
-   - `aggregateId`: the order id. We also use it as the **Kafka message key**. Kafka guarantees order only *within a partition*, and messages with the same key always go to the same partition. So all events of one order arrive in order.
+   - `aggregateId`: the order id. We also use it as the **Kafka message key**. Kafka guarantees order only _within a partition_, and messages with the same key always go to the same partition. So all events of one order arrive in order.
    - `correlationId` / `causationId`: let you trace a whole chain ("this payment happened because of that reservation, which happened because of that order"). This is essential when debugging distributed systems.
 
 ### Key concepts
+
 - **Event vs command.** A command says "do this" (`ReserveStock`) and can be refused. An event says "this happened" (`InventoryReserved`), is in the past tense, and is a fact. We mostly publish events.
-- **Topic.** A named log of messages. Producers append, consumers read at their own pace and remember their position (the *offset*).
+- **Topic.** A named log of messages. Producers append, consumers read at their own pace and remember their position (the _offset_).
 - **Consumer group.** Several instances of one service share a group id, so Kafka splits partitions between them. That is how you scale horizontally.
 - **Saga (choreography style).** A business process that spans services without a distributed transaction. Each service reacts to events and publishes new ones. If a later step fails, earlier steps are undone by **compensating actions** (for example, payment fails, so inventory releases the stock). See the diagram in `contracts/events/README.md`.
 
 ### Try it yourself
+
 ```bash
 docker compose up -d
 # open http://localhost:8080, then create a topic called "orders"
@@ -36,6 +40,7 @@ docker compose exec redpanda rpk topic produce orders --key order-1
 # type a JSON line and press Enter, then watch it appear in the Console
 docker compose exec redpanda rpk topic consume orders
 ```
+
 Exercise: produce three messages with key `order-1` and three with key `order-2`, and check in the Console which partition each landed in.
 
 ---
@@ -43,6 +48,7 @@ Exercise: produce three messages with key `order-1` and three with key `order-2`
 ## Step 2: Order service and the transactional outbox
 
 ### What we built
+
 ```
 packages/contracts/          shared TypeScript types for every event + createEvent() helper
 services/order-service/
@@ -51,37 +57,46 @@ services/order-service/
   src/outbox/                addToOutbox() + OutboxRelay (outbox table -> Kafka)
   src/infra/                 Postgres pool with transaction() helper, Kafka producer
 ```
+
 Flow: `POST /orders` -> one DB transaction inserts the order **and** an outbox row -> the relay (every 500 ms) reads unpublished outbox rows -> sends them to the `orders` topic -> marks them published.
 
 ### The problem this solves: the dual write
+
 The naive version looks like this:
+
 ```ts
 await db.query('INSERT INTO orders ...');
-await kafka.send('OrderCreated');   // what if the process dies right here, or Kafka is down?
+await kafka.send('OrderCreated'); // what if the process dies right here, or Kafka is down?
 ```
+
 Two separate systems, two separate writes, and no way to make them atomic. If the app crashes between the lines, the order exists but no other service ever hears about it. Swap the order of the lines and you can announce an order that was never saved. This is the **dual-write problem**, and it is one of the most common interview questions about event-driven systems.
 
 ### The fix: the transactional outbox
-Write the event into a table *in the same database transaction* as the order (`orders.service.ts`). A database transaction is atomic, so either both rows exist or neither does. A separate background loop (`outbox.relay.ts`) then copies outbox rows to Kafka. If Kafka is down, rows simply wait in the table and get sent later. Nothing is lost.
+
+Write the event into a table _in the same database transaction_ as the order (`orders.service.ts`). A database transaction is atomic, so either both rows exist or neither does. A separate background loop (`outbox.relay.ts`) then copies outbox rows to Kafka. If Kafka is down, rows simply wait in the table and get sent later. Nothing is lost.
 
 ### Design choices worth understanding
+
 - **`FOR UPDATE SKIP LOCKED`** in the relay query. If you run three copies of the service, each relay locks a different batch of rows instead of all three sending the same events. This is a classic Postgres job-queue trick.
 - **`ORDER BY id`** with a `BIGSERIAL` id preserves the order in which events were created.
-- **At-least-once delivery.** If the relay crashes *after* Kafka accepted a batch but *before* the `UPDATE ... published_at`, that batch is sent again. You cannot get exactly-once for free across two systems, so the rule is: **producers may duplicate, and consumers must be idempotent.** We build idempotent consumers in Step 3.
-- **Idempotent producer** (`idempotent: true` in `kafka.ts`). This stops duplicates caused by the Kafka client's own network retries. It does *not* cover the crash case above, which is why consumer idempotency still matters.
+- **At-least-once delivery.** If the relay crashes _after_ Kafka accepted a batch but _before_ the `UPDATE ... published_at`, that batch is sent again. You cannot get exactly-once for free across two systems, so the rule is: **producers may duplicate, and consumers must be idempotent.** We build idempotent consumers in Step 3.
+- **Idempotent producer** (`idempotent: true` in `kafka.ts`). This stops duplicates caused by the Kafka client's own network retries. It does _not_ cover the crash case above, which is why consumer idempotency still matters.
 - **HTTP 202 Accepted** instead of 201. The order is accepted, but whether it ends up confirmed or cancelled is decided later by other services. The client polls `GET /orders/:id` (or, later, the query service).
 - **Plain SQL instead of an ORM.** For learning, seeing the exact `BEGIN / INSERT / INSERT / COMMIT` makes the pattern obvious. In a bigger codebase you might use Prisma or TypeORM. The pattern stays the same.
 - **A shared `@shop/contracts` package.** Every service imports the same event types, so if a payload changes, the TypeScript compiler shows every place that breaks.
 
 ### Alternatives you should be able to name
+
 - **Change Data Capture (CDC)** with Debezium. Instead of polling, Debezium reads Postgres's write-ahead log and streams outbox inserts to Kafka. It has lower latency and no polling load, but there's one more piece of infrastructure to run.
 - **Listen to yourself.** Publish to Kafka first, and have the service consume its own event to update its database. It works, but the API can't immediately read back what it just wrote.
 
 ### How the tests prove it (`npm test -w @shop/order-service`)
+
 - `orders.service.spec.ts`: the order insert and the outbox insert happen in the same transaction. The event's message key is the order id. If the order insert fails, no event is staged.
 - `outbox.relay.spec.ts`: rows are grouped by topic and marked published. **If Kafka is down, rows stay unpublished and get retried.** No outbox rows means no Kafka call.
 
 ### Try it yourself
+
 ```bash
 docker compose up -d
 npm install && npm run build
@@ -89,6 +104,7 @@ npm start -w @shop/order-service
 curl -X POST localhost:3001/orders -H 'content-type: application/json' \
   -d '{"customerId":"c-1","items":[{"sku":"BOOK","quantity":2,"unitPriceCents":1500}]}'
 ```
+
 Watch the `orders` topic in Redpanda Console (http://localhost:8080).
 
 Exercise: stop Kafka (`docker compose stop redpanda`), create three orders, then run `SELECT id, published_at FROM outbox;` in the `orders` database. Start Kafka again and watch the relay catch up. That's the outbox doing its job.
@@ -98,6 +114,7 @@ Exercise: stop Kafka (`docker compose stop redpanda`), create three orders, then
 ## Step 3: Inventory, payment, and the saga with compensation
 
 ### What we built
+
 ```
 packages/messaging/            shared plumbing every service now reuses
   schema.ts                    outbox + processed_events tables
@@ -110,6 +127,7 @@ services/order-service/src/saga  state machine + consumer that settles the order
 ```
 
 ### The whole flow
+
 ```
              order-service          inventory-service         payment-service
 POST /orders ──► OrderCreated ──────► reserve stock
@@ -121,44 +139,54 @@ POST /orders ──► OrderCreated ──────► reserve stock
              order-service settles: PENDING ──► CONFIRMED  (OrderConfirmed)
                                      PENDING ──► CANCELLED  (OrderCancelled) ──► inventory releases stock
 ```
+
 Try it: order a `LAPTOP` (price above $1,000) and payment declines. Watch `GET localhost:3002/products`: the laptop count goes down when it's reserved, then back up when the order is cancelled. That's **compensation**.
 
 ### Why a saga?
+
 In a monolith you'd wrap "reserve stock + charge card + confirm order" in one database transaction. Here those are three services with three databases, so there's no shared transaction. (Two-phase commit exists, but it is slow, fragile, and Kafka doesn't support it.)
 
 A **saga** replaces one big transaction with a chain of small local ones. Each step commits on its own and publishes an event. If a later step fails, earlier steps are **undone by compensating actions**, which are new business operations that reverse the effect ("release the stock"). It's not a rollback, because the stock really was held for a few moments.
 
 ### Choreography vs orchestration
+
 - **Choreography (what we built):** no central boss. Each service reacts to events and emits new ones. It's loosely coupled and simple for 3–4 steps, but the overall flow is spread across services, so you need a diagram like the one above to see it.
 - **Orchestration:** one "saga orchestrator" sends commands ("ReserveStock", "ChargeCard") and tracks state. The flow is easier to follow and change, but there's one more component, and it can become a "god service". Tools like Temporal are built for this.
 - **Interview answer:** choreography for short flows, orchestration when the flow has many steps, branches, or timeouts.
 
 ### Idempotent consumers (the other half of Step 2's promise)
-The outbox guarantees *at-least-once*, so consumers *will* see duplicates sometimes. `EventConsumer.process()` does this in **one transaction**:
+
+The outbox guarantees _at-least-once_, so consumers _will_ see duplicates sometimes. `EventConsumer.process()` does this in **one transaction**:
+
 1. `INSERT INTO processed_events (event_id) ... ON CONFLICT DO NOTHING`. If 0 rows were inserted, it's a duplicate, so skip it.
 2. Run the handler (business change + outbox rows).
 3. `COMMIT`, then Kafka commits the offset.
 
-Because the dedupe row and the business change commit together, a crash anywhere means *both* are rolled back and the redelivery is processed cleanly. Together: **at-least-once delivery + idempotent processing = effectively exactly-once.** This sentence is worth memorising.
+Because the dedupe row and the business change commit together, a crash anywhere means _both_ are rolled back and the redelivery is processed cleanly. Together: **at-least-once delivery + idempotent processing = effectively exactly-once.** This sentence is worth memorising.
 
 Extra safety nets, in layers:
+
 - `payments.order_id` is the PRIMARY KEY, so the database itself refuses a second charge for one order.
 - The inventory release only touches reservations with `status = 'RESERVED'`, so releasing twice is impossible.
 - The order state machine only moves from `PENDING`, so a late `PaymentSucceeded` after a cancel does nothing.
 
 ### Concurrency details
+
 - **`SELECT ... FOR UPDATE`** on product rows: two orders for the last keyboard can't both succeed. The second one waits for the first to commit, then sees 0 left.
 - **`ORDER BY sku`** when locking: if order A locks BOOK then MUG while order B locks MUG then BOOK, they deadlock. Always locking in the same order prevents it.
 - **`CHECK (available >= 0)`**: the last line of defence, enforced by the database even if the code has a bug.
 - **Message key = order id**: all events for one order land in one partition, so they're consumed in order.
 
 ### Design pattern: functional core, imperative shell
+
 The decisions are **pure functions** with no database and no Kafka: `nextState()` (order), `decideReservation()` (inventory), and `charge()` (payment). The consumers are thin shells that load data, call the pure function, and write results. That's why the business rules have fast, simple unit tests (19 tests across the repo now).
 
 ### Why events carry data ("event-carried state transfer")
+
 `InventoryReserved` includes the items and prices, so the payment service can compute the amount **without calling the order service**. If services call each other synchronously to fill gaps, you get a distributed monolith: one service down means everything is down.
 
 ### Try it yourself
+
 ```bash
 docker compose up -d && npm install && npm run build
 npm run start:inventory   # terminal 1
@@ -178,7 +206,9 @@ curl -X POST localhost:3001/orders -H 'content-type: application/json' \
 curl localhost:3001/orders/<orderId>     # status
 curl localhost:3002/products             # stock
 ```
+
 Exercises:
+
 1. Stop the payment service, place an order, and check that it stays `PENDING`. Start payment again and watch it finish. Events wait in Kafka, so nothing is lost.
 2. In Redpanda Console, follow one order's events by `correlationId` across all three topics.
 3. Hard: add a `ShippingScheduled` step after `PaymentSucceeded`. Which compensations would a shipping failure need?
@@ -188,7 +218,9 @@ Exercises:
 ## Step 4: CQRS, the read side
 
 ### What we built
+
 `services/order-query-service` (port 3004). It consumes **all three topics** and keeps one wide `order_view` row per order:
+
 - `GET /orders/:id`: status, inventory result, payment result, cancel reason, and a full **event timeline** (an order-tracking page)
 - `GET /customers/:customerId/orders`: a "my orders" page
 - `GET /stats`: order count and revenue by status (a mini admin dashboard)
@@ -196,49 +228,60 @@ Exercises:
 It has no Kafka producer and no outbox, and it never writes anywhere except its own database.
 
 ### What CQRS means
+
 **Command Query Responsibility Segregation:** use different models (and here, different services and databases) for **writing** and for **reading**.
+
 - **Command side** (order, inventory and payment services): normalised tables designed to enforce rules correctly: locks, constraints, state machines.
 - **Query side** (this service): a denormalised table designed for what screens need, with zero joins. To show one order you'd otherwise need data from three services and three databases. Here it's one primary-key lookup.
 
 The two sides are connected by events. The read model is a **projection**: a fold of the event stream (`events.reduce(project, emptyView)`), which is literally how the tests build it.
 
 ### Trade-offs to be able to explain
+
 - **Eventual consistency.** Right after `POST /orders`, the query service may not have the order yet (a few milliseconds of lag). That's why `GET /orders/:id` returns a 404 that says "may not be projected yet". UIs handle this by showing "processing…", polling, or reading their own write from the command side.
 - **More moving parts.** Don't use CQRS for a simple CRUD app. It pays off when reads and writes have very different shapes or loads (e.g. 100× more reads than writes, or reads that need data from several services).
 - **Scaling.** Reads and writes scale separately: add read replicas or swap Postgres for Elasticsearch or Redis on the query side without touching the command side.
 
 ### The tricky part: ordering across topics
+
 Kafka guarantees order **only within one partition**. Our events for one order are spread over three topics, so the projector may see `PaymentFailed` before `OrderCreated`. The projector (`projection.ts`) is written so **any arrival order gives the same final view**:
+
 - each event fills in only the fields it owns
 - a final status is never overwritten by an earlier-stage event
 - the timeline is sorted by `occurredAt`, not by arrival
 
-The test `gives the same result no matter what order events arrive in` replays events backwards and checks the result is identical. It caught a real bug while I was writing it: a reservation arriving *after* the cancel showed as `RESERVED` instead of `RELEASED`.
+The test `gives the same result no matter what order events arrive in` replays events backwards and checks the result is identical. It caught a real bug while I was writing it: a reservation arriving _after_ the cancel showed as `RESERVED` instead of `RELEASED`.
 
 ### Rebuilding a projection, a CQRS superpower
+
 The view is **disposable**. Want a new column, or found a bug in the projector? Fix the code, `TRUNCATE order_view`, start with a new consumer group (`PROJECTION_GROUP_ID=order-query-v2`) and it replays every topic from the beginning. This only works if Kafka keeps events long enough, which is why event-sourced systems often set topic retention to "forever" or use compacted topics.
 
 ### CQRS vs event sourcing (often confused)
-- **Event sourcing:** the *write side's* source of truth is the event log itself (no `orders` table, just events, and current state = replay).
+
+- **Event sourcing:** the _write side's_ source of truth is the event log itself (no `orders` table, just events, and current state = replay).
 - **We are not event-sourced:** our write side stores current state in normal tables and publishes events via the outbox. CQRS and event sourcing are often used together, but each works without the other.
 
 ### Try it yourself
+
 ```bash
 npm run build && npm run start:query          # alongside the other three services
 curl localhost:3004/orders/<orderId>         # look at "timeline"
 curl localhost:3004/customers/c-1/orders
 curl localhost:3004/stats
 ```
+
 Exercises:
+
 1. Stop the query service, place 5 orders, start it again and watch it catch up.
 2. Rebuild the view: `TRUNCATE order_view;` in the `order_query` DB, then restart with `PROJECTION_GROUP_ID=order-query-v2`.
-3. Add a `cancelledBecauseOutOfStock` count to `/stats` *without touching any other service*. That's the point of CQRS.
+3. Add a `cancelledBecauseOutOfStock` count to `/stats` _without touching any other service_. That's the point of CQRS.
 
 ---
 
 ## Step 5: Reliability, Docker, end-to-end tests, CI
 
 ### What we built
+
 - **Retries with exponential backoff** (`packages/messaging/src/retry.ts`): a failed event is retried after 200 ms, then 400 ms, before being given up on.
 - **Dead-letter topics** (`orders.dlq`, `inventory.dlq`, `payments.dlq`): after the last retry, the message is copied to `<topic>.dlq` with headers explaining what failed (`dlq-error`, original topic, partition, offset, consumer group), and the consumer moves on.
 - **Explicit topic creation** (`ensureTopics()`): 3 partitions per topic, created on startup by whichever service starts first.
@@ -248,34 +291,43 @@ Exercises:
 - **README** with an architecture diagram and a pattern table, written for recruiters and interviewers.
 
 ### Why retries AND a dead-letter queue?
+
 There are two very different kinds of failure:
+
 - **Transient**, like the DB restarting or a network blip. Trying again a moment later works. → **Retry with backoff.** Backoff matters because hammering a struggling database makes it worse.
 - **Poison**, like a malformed message or a bug for one specific input. It fails every time. If you retry forever, that message blocks its whole partition, so every order behind it is stuck. → **Dead-letter it** and keep going.
 
 What happens to DLQ messages? In real systems you alert on DLQ size (Step 5 of the Observability project could do this!), inspect the messages, fix the bug, then **replay** them back to the main topic.
 
-**Trade-off to mention in interviews:** dead-lettering breaks per-key ordering. If event 2 of an order is parked and event 3 is processed, the order may end up inconsistent. Our state machine and projection tolerate this (they ignore events that don't apply), but it's why some teams *stop the partition* instead of skipping when ordering is critical.
+**Trade-off to mention in interviews:** dead-lettering breaks per-key ordering. If event 2 of an order is parked and event 3 is processed, the order may end up inconsistent. Our state machine and projection tolerate this (they ignore events that don't apply), but it's why some teams _stop the partition_ instead of skipping when ordering is critical.
 
 ### Why retries live inside the consumer, not in Kafka
+
 Kafka has no built-in per-message retry or delay. Options are:
+
 1. **In-process retry** (what we do): simple, but it holds up the partition for a few hundred ms.
 2. **Retry topics** (`orders.retry.1m`, `orders.retry.10m`, ...): the failed message goes to a delay topic and a separate consumer re-publishes it later. Non-blocking, but more topics and more code. Uber's engineering blog has a well-known write-up on this approach.
 
 ### Why test end-to-end at all, when there are unit tests?
-Unit tests prove each piece of logic. Only an end-to-end test proves the *wiring*: topic names match, events serialise correctly, consumer groups subscribe to the right topics, migrations run, and services find each other in Docker. Both kinds catch different bugs, which is the testing pyramid: many fast unit tests, a few slow end-to-end tests.
+
+Unit tests prove each piece of logic. Only an end-to-end test proves the _wiring_: topic names match, events serialise correctly, consumer groups subscribe to the right topics, migrations run, and services find each other in Docker. Both kinds catch different bugs, which is the testing pyramid: many fast unit tests, a few slow end-to-end tests.
 
 ### Docker details worth knowing
+
 - **Multi-stage build:** stage 1 has compilers and dev dependencies, and stage 2 only copies the built result. The image is smaller and has less attack surface.
 - **`USER node`:** don't run containers as root.
-- **Two Kafka listeners:** containers reach the broker as `redpanda:9092` and your laptop as `localhost:19092`. Kafka tells clients which address to reconnect to (the *advertised* address), so a single address can't work for both. This is the #1 "why can't I connect to Kafka in Docker" problem.
+- **Two Kafka listeners:** containers reach the broker as `redpanda:9092` and your laptop as `localhost:19092`. Kafka tells clients which address to reconnect to (the _advertised_ address), so a single address can't work for both. This is the #1 "why can't I connect to Kafka in Docker" problem.
 - **Health checks + `depends_on: condition: service_healthy`:** services wait for Kafka and Postgres to be ready, not just started.
 
 ### Try it yourself
+
 ```bash
 docker compose up -d --build
 node tests/e2e/e2e.mjs
 ```
+
 Exercises:
+
 1. Make a poison pill: in Redpanda Console, produce `not json` to the `orders` topic. Check the inventory logs, then find the message in `orders.dlq` with its error headers.
 2. Simulate a transient failure: `docker compose stop postgres` for 1 second while placing an order, and watch the `retry 1 for ...` log lines.
 3. Scale out: `docker compose up -d --scale inventory-service=3` (remove its fixed port first). With 3 partitions, Kafka gives each replica one partition. Check the consumer group in Console.

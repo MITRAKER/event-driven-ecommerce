@@ -4,10 +4,17 @@ import { Database } from '@shop/messaging';
 import { emptyView, OrderView } from './projection';
 
 const toView = (r: any): OrderView => ({
-  orderId: r.order_id, customerId: r.customer_id, status: r.status, totalCents: r.total_cents,
-  items: r.items, inventoryStatus: r.inventory_status, paymentStatus: r.payment_status,
-  cancelReason: r.cancel_reason, timeline: r.timeline,
-  createdAt: r.created_at?.toISOString?.() ?? r.created_at, updatedAt: r.updated_at?.toISOString?.() ?? r.updated_at,
+  orderId: r.order_id,
+  customerId: r.customer_id,
+  status: r.status,
+  totalCents: r.total_cents,
+  items: r.items,
+  inventoryStatus: r.inventory_status,
+  paymentStatus: r.payment_status,
+  cancelReason: r.cancel_reason,
+  timeline: r.timeline,
+  createdAt: r.created_at?.toISOString?.() ?? r.created_at,
+  updatedAt: r.updated_at?.toISOString?.() ?? r.updated_at,
 });
 
 @Injectable()
@@ -30,8 +37,19 @@ export class OrderViewRepository {
          items = EXCLUDED.items, inventory_status = EXCLUDED.inventory_status,
          payment_status = EXCLUDED.payment_status, cancel_reason = EXCLUDED.cancel_reason,
          timeline = EXCLUDED.timeline, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`,
-      [v.orderId, v.customerId, v.status, v.totalCents, JSON.stringify(v.items), v.inventoryStatus,
-       v.paymentStatus, v.cancelReason, JSON.stringify(v.timeline), v.createdAt, v.updatedAt],
+      [
+        v.orderId,
+        v.customerId,
+        v.status,
+        v.totalCents,
+        JSON.stringify(v.items),
+        v.inventoryStatus,
+        v.paymentStatus,
+        v.cancelReason,
+        JSON.stringify(v.timeline),
+        v.createdAt,
+        v.updatedAt,
+      ],
     );
   }
 

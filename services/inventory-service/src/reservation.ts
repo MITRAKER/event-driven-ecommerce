@@ -14,7 +14,8 @@ export function decideReservation(stock: Map<string, number>, items: OrderItem[]
   for (const [sku, qty] of wanted) {
     const available = stock.get(sku);
     if (available === undefined) return { ok: false, reason: `unknown sku ${sku}` };
-    if (available < qty) return { ok: false, reason: `out of stock: ${sku} (wanted ${qty}, have ${available})` };
+    if (available < qty)
+      return { ok: false, reason: `out of stock: ${sku} (wanted ${qty}, have ${available})` };
   }
   return { ok: true };
 }

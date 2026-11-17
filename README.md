@@ -28,25 +28,25 @@ flowchart LR
   query --- qdb[(read model DB)]
 ```
 
-| Service | Port | Owns | Listens to | Publishes |
-|---|---|---|---|---|
-| order-service | 3001 | orders | inventory, payments | OrderCreated, OrderConfirmed, OrderCancelled |
-| inventory-service | 3002 | products, reservations | orders | InventoryReserved, InventoryRejected |
-| payment-service | 3003 | payments | inventory | PaymentSucceeded, PaymentFailed |
-| order-query-service | 3004 | order_view (read model) | everything | nothing |
+| Service             | Port | Owns                    | Listens to          | Publishes                                    |
+| ------------------- | ---- | ----------------------- | ------------------- | -------------------------------------------- |
+| order-service       | 3001 | orders                  | inventory, payments | OrderCreated, OrderConfirmed, OrderCancelled |
+| inventory-service   | 3002 | products, reservations  | orders              | InventoryReserved, InventoryRejected         |
+| payment-service     | 3003 | payments                | inventory           | PaymentSucceeded, PaymentFailed              |
+| order-query-service | 3004 | order_view (read model) | everything          | nothing                                      |
 
 ## Patterns implemented
 
-| Pattern | Where | Problem it solves |
-|---|---|---|
-| Transactional outbox | `packages/messaging/src/outbox.*` | Saving to the DB and publishing to Kafka can't be atomic (the dual-write problem) |
-| Idempotent consumer (inbox) | `packages/messaging/src/inbox.ts`, `event.consumer.ts` | At-least-once delivery means duplicates. Processing each `eventId` once per service gives effectively-once processing |
-| Choreographed saga and compensation | `services/*/src/*consumer.ts` | No distributed transactions across services. Failures are undone by releasing stock |
-| CQRS read model | `services/order-query-service` | One fast, join-free view built from three services' events, rebuildable by replay |
-| Order-independent projection | `order-query-service/src/projection.ts` | Kafka orders messages only within a partition, and the view must not depend on arrival order |
-| Retry with backoff and DLQ | `packages/messaging/src/retry.ts`, `event.consumer.ts` | Transient errors are retried. Poison messages are parked in `<topic>.dlq` instead of blocking the partition |
-| Pessimistic locking | inventory `FOR UPDATE` (sku order) | Two orders can't buy the last item, and there are no deadlocks |
-| Functional core / imperative shell | `nextState`, `decideReservation`, `charge`, `project` | Business rules are pure functions that are easy to test |
+| Pattern                             | Where                                                  | Problem it solves                                                                                                     |
+| ----------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| Transactional outbox                | `packages/messaging/src/outbox.*`                      | Saving to the DB and publishing to Kafka can't be atomic (the dual-write problem)                                     |
+| Idempotent consumer (inbox)         | `packages/messaging/src/inbox.ts`, `event.consumer.ts` | At-least-once delivery means duplicates. Processing each `eventId` once per service gives effectively-once processing |
+| Choreographed saga and compensation | `services/*/src/*consumer.ts`                          | No distributed transactions across services. Failures are undone by releasing stock                                   |
+| CQRS read model                     | `services/order-query-service`                         | One fast, join-free view built from three services' events, rebuildable by replay                                     |
+| Order-independent projection        | `order-query-service/src/projection.ts`                | Kafka orders messages only within a partition, and the view must not depend on arrival order                          |
+| Retry with backoff and DLQ          | `packages/messaging/src/retry.ts`, `event.consumer.ts` | Transient errors are retried. Poison messages are parked in `<topic>.dlq` instead of blocking the partition           |
+| Pessimistic locking                 | inventory `FOR UPDATE` (sku order)                     | Two orders can't buy the last item, and there are no deadlocks                                                        |
+| Functional core / imperative shell  | `nextState`, `decideReservation`, `charge`, `project`  | Business rules are pure functions that are easy to test                                                               |
 
 ## Run it
 
@@ -56,6 +56,7 @@ node tests/e2e/e2e.mjs             # end-to-end checks against the running syste
 ```
 
 Then try it:
+
 ```bash
 # confirmed
 curl -X POST localhost:3001/orders -H 'content-type: application/json' \
@@ -69,9 +70,11 @@ curl localhost:3004/customers/c-1/orders
 curl localhost:3004/stats
 curl localhost:3002/products              # watch stock move
 ```
+
 Watch the events live in Redpanda Console at http://localhost:8080.
 
 **Develop locally** (infra in Docker, services on your machine):
+
 ```bash
 docker compose up -d redpanda redpanda-console postgres
 npm install && npm run build
@@ -80,6 +83,7 @@ npm test                                                               # unit te
 ```
 
 ## Project layout
+
 ```
 packages/contracts     event types shared by all services
 packages/messaging     outbox, inbox, consumer base class, retry and DLQ, DB and Kafka wiring
@@ -89,4 +93,5 @@ tests/e2e              black-box end-to-end test (used in CI)
 ```
 
 ## CI
+
 GitHub Actions runs the build and unit tests, then starts the full stack with Docker Compose and runs the end-to-end test on every pull request.

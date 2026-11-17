@@ -1,112 +1,156 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { EventType, InvalidEventError, parseEvent, ShopEvent, Topic } from '@shop/contracts';
 import { Consumer, KafkaMessage, Producer } from 'kafkajs';
 import { PoolClient } from 'pg';
-import { ShopEvent } from '@shop/contracts';
+import { MessagingConfig } from './config';
 import { Database } from './database';
+import { classifyFailure, RedeliverLaterError } from './errors';
 import { claimEvent } from './inbox';
-import { dlqTopic, ensureTopics, kafka } from './kafka';
+import { dlqTopic, KafkaClient } from './kafka';
 import { withRetry } from './retry';
 
-export type EventHandler = (event: ShopEvent, tx: PoolClient) => Promise<void>;
+export type ProcessResult = 'handled' | 'duplicate' | 'ignored';
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Decode a raw Kafka message. Anything that is not a valid event becomes an InvalidEventError. */
+export function decodeMessage(value: Buffer): ShopEvent {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(value.toString('utf8'));
+  } catch {
+    throw new InvalidEventError('message is not valid JSON');
+  }
+  return parseEvent(raw);
+}
 
 /**
- * Subscribe to topics and route each event to a handler, exactly once per service:
- *   BEGIN -> claim eventId -> handler (business change + outbox rows) -> COMMIT -> commit offset
- * Duplicates are skipped by claimEvent(). Unknown event types are ignored, which lets
- * producers add new events without breaking old consumers.
+ * Subscribe to topics and process each event exactly once per service:
+ *   BEGIN -> claim eventId -> handle() (business change + outbox rows) -> COMMIT -> commit offset
+ *
+ * Subclasses declare which event types they handle and implement handle() with a plain
+ * switch (JPL rule 9: no tables of function pointers, so the call graph stays static).
+ * Duplicates are skipped by claimEvent(); event types not in handledTypes are ignored,
+ * which lets producers add new events without breaking old consumers.
  */
-@Injectable()
 export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleDestroy {
   protected readonly logger = new Logger(this.constructor.name);
-  private consumer?: Consumer;
-  private dlqProducer?: Producer;
-  /** In-process retries before a message is parked in the dead-letter topic. */
-  protected retryAttempts = Number(process.env.CONSUMER_RETRY_ATTEMPTS ?? 3);
-  protected retryBaseDelayMs = Number(process.env.CONSUMER_RETRY_BASE_MS ?? 200);
+  private consumer: Consumer | undefined;
+  private dlqProducer: Producer | undefined;
 
   /** Consumer group id: all replicas of one service share it. */
   protected abstract readonly groupId: string;
-  protected abstract readonly topics: string[];
-  /** eventType -> handler. */
-  protected abstract readonly handlers: Partial<Record<ShopEvent['eventType'], EventHandler>>;
+  protected abstract readonly topics: readonly Topic[];
+  protected abstract readonly handledTypes: ReadonlySet<EventType>;
 
-  constructor(protected readonly db: Database) {}
+  /** Apply one event inside the given transaction. Throw to roll back and retry. */
+  protected abstract handle(event: ShopEvent, tx: PoolClient): Promise<void>;
 
-  async onApplicationBootstrap() {
-    await ensureTopics();
-    this.dlqProducer = kafka.producer();
+  constructor(
+    protected readonly db: Database,
+    protected readonly kafka: KafkaClient,
+    protected readonly config: MessagingConfig,
+  ) {}
+
+  async onApplicationBootstrap(): Promise<void> {
+    await this.kafka.ensureTopics();
+    this.dlqProducer = this.kafka.kafka.producer({ retry: { retries: 5 } });
     await this.dlqProducer.connect();
-    this.consumer = kafka.consumer({ groupId: this.groupId });
+    this.consumer = this.kafka.kafka.consumer({ groupId: this.groupId });
     await this.consumer.connect();
-    await this.consumer.subscribe({ topics: this.topics, fromBeginning: true });
+    await this.consumer.subscribe({ topics: [...this.topics], fromBeginning: true });
     await this.consumer.run({
-      eachMessage: ({ topic, partition, message }) => this.receive(topic, partition, message),
+      eachMessage: async ({ topic, partition, message }) => {
+        await this.receive(topic, partition, message);
+      },
     });
   }
 
-  async onModuleDestroy() {
+  async onModuleDestroy(): Promise<void> {
+    // Stop consuming first, so nothing new starts while the DB pool is being closed.
     await this.consumer?.disconnect();
     await this.dlqProducer?.disconnect();
   }
 
-  /**
-   * Parse -> process with retries -> on final failure, park the message in <topic>.dlq.
-   * Without the DLQ, one bad message would be retried forever and block its whole
-   * partition (every order behind it would be stuck). That's called a "poison pill".
-   */
-  private async receive(topic: string, partition: number, message: KafkaMessage) {
-    if (!message.value) return;
-    let event: ShopEvent;
-    try {
-      event = JSON.parse(message.value.toString());
-    } catch (err) {
-      return this.deadLetter(topic, partition, message, err);
-    }
-    try {
-      await withRetry(() => this.process(event), {
-        attempts: this.retryAttempts,
-        baseDelayMs: this.retryBaseDelayMs,
-        onRetry: (n, err) => this.logger.warn(`retry ${n} for ${event.eventType} ${event.eventId}: ${(err as Error).message}`),
-      });
-    } catch (err) {
-      await this.deadLetter(topic, partition, message, err);
-    }
-  }
-
-  private async deadLetter(topic: string, partition: number, message: KafkaMessage, err: unknown) {
-    this.logger.error(`dead-lettering message from ${topic}[${partition}]@${message.offset}: ${(err as Error).message}`);
-    await this.dlqProducer!.send({
-      topic: dlqTopic(topic),
-      messages: [{
-        key: message.key,
-        value: message.value,
-        headers: {
-          ...message.headers,
-          'dlq-error': String((err as Error)?.message ?? err),
-          'dlq-original-topic': topic,
-          'dlq-original-partition': String(partition),
-          'dlq-original-offset': message.offset,
-          'dlq-consumer-group': this.groupId,
-          'dlq-failed-at': new Date().toISOString(),
-        },
-      }],
-    });
-  }
-
-  /** Public so tests can feed events straight in. Returns 'handled' | 'duplicate' | 'ignored'. */
-  async process(event: ShopEvent): Promise<'handled' | 'duplicate' | 'ignored'> {
-    const handler = this.handlers[event.eventType];
-    if (!handler) return 'ignored';
-    return this.db.transaction(async (tx) => {
+  /** Process one already-decoded event. Public so tests can feed events straight in. */
+  async process(event: ShopEvent): Promise<ProcessResult> {
+    if (!this.handledTypes.has(event.eventType)) return 'ignored';
+    return await this.db.transaction(async (tx) => {
       if (!(await claimEvent(tx, event))) {
         this.logger.warn(`duplicate ${event.eventType} ${event.eventId} skipped`);
         return 'duplicate';
       }
-      await handler(event, tx);
+      await this.handle(event, tx);
       this.logger.log(`handled ${event.eventType} for ${event.aggregateId}`);
       return 'handled';
     });
-    // If the handler throws, the transaction rolls back (claim included) and the error
-    // propagates to receive(), which retries with backoff and finally dead-letters it.
+  }
+
+  /**
+   * Decode -> process with bounded retries -> decide what to do with a failure:
+   * - permanent (bad message) or unknown (a bug, after retries): park it in <topic>.dlq.
+   *   Without the DLQ, one bad message would be retried forever and block its whole
+   *   partition (every order behind it would be stuck): a "poison pill".
+   * - infrastructure (database down): throw, so kafkajs does not commit the offset and
+   *   redelivers the message later. Healthy events are never dead-lettered just because
+   *   a dependency had a bad minute.
+   * If even the DLQ send fails, that error also reaches kafkajs. A message is never dropped silently.
+   */
+  async receive(topic: string, partition: number, message: KafkaMessage): Promise<void> {
+    if (message.value === null) return; // tombstone: nothing to process
+    const source = { topic, partition, message };
+    let event: ShopEvent;
+    try {
+      event = decodeMessage(message.value);
+    } catch (err) {
+      await this.deadLetter(source, err);
+      return;
+    }
+    try {
+      await withRetry(async () => await this.process(event), {
+        attempts: this.config.settings.consumerRetryAttempts,
+        baseDelayMs: this.config.settings.consumerRetryBaseMs,
+        isPermanent: (err) => classifyFailure(err) === 'permanent',
+        onRetry: (n, err) => {
+          this.logger.warn(`retry ${n} for ${event.eventType} ${event.eventId}: ${errorMessage(err)}`);
+        },
+      });
+    } catch (err) {
+      if (classifyFailure(err) === 'infrastructure') {
+        throw new RedeliverLaterError(
+          `${event.eventType} ${event.eventId} will be redelivered: ${errorMessage(err)}`,
+        );
+      }
+      await this.deadLetter(source, err);
+    }
+  }
+
+  private async deadLetter(
+    source: { topic: string; partition: number; message: KafkaMessage },
+    err: unknown,
+  ): Promise<void> {
+    const { topic, partition, message } = source;
+    this.logger.error(`dead-lettering ${topic}[${partition}]@${message.offset}: ${errorMessage(err)}`);
+    if (this.dlqProducer === undefined) throw new Error('dead-letter producer is not connected');
+    await this.dlqProducer.send({
+      topic: dlqTopic(topic),
+      messages: [
+        {
+          key: message.key,
+          value: message.value,
+          headers: {
+            ...message.headers,
+            'dlq-error': errorMessage(err),
+            'dlq-original-topic': topic,
+            'dlq-original-partition': String(partition),
+            'dlq-original-offset': message.offset,
+            'dlq-consumer-group': this.groupId,
+            'dlq-failed-at': new Date().toISOString(),
+          },
+        },
+      ],
+    });
   }
 }

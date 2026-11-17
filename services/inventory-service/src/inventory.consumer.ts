@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import {
-  createEvent, InventoryRejected, InventoryReserved, OrderCancelled, OrderCreated, Topics,
+  createEvent,
+  InventoryRejected,
+  InventoryReserved,
+  OrderCancelled,
+  OrderCreated,
+  Topics,
 } from '@shop/contracts';
 import { addToOutbox, Database, EventConsumer, EventHandler } from '@shop/messaging';
 import { decideReservation } from './reservation';
@@ -24,17 +29,30 @@ export class InventoryConsumer extends EventConsumer {
     const decision = decideReservation(new Map(rows.map((r) => [r.sku, r.available])), items);
 
     if (!decision.ok) {
-      await addToOutbox(tx, Topics.Inventory,
-        createEvent<InventoryRejected>('InventoryRejected', orderId, { orderId, reason: decision.reason }, event));
+      await addToOutbox(
+        tx,
+        Topics.Inventory,
+        createEvent<InventoryRejected>(
+          'InventoryRejected',
+          orderId,
+          { orderId, reason: decision.reason },
+          event,
+        ),
+      );
       return;
     }
     for (const i of items) {
       await tx.query(`UPDATE products SET available = available - $2 WHERE sku = $1`, [i.sku, i.quantity]);
     }
-    await tx.query(`INSERT INTO reservations (order_id, items, status) VALUES ($1, $2, 'RESERVED')`,
-      [orderId, JSON.stringify(items)]);
-    await addToOutbox(tx, Topics.Inventory,
-      createEvent<InventoryReserved>('InventoryReserved', orderId, { orderId, items }, event));
+    await tx.query(`INSERT INTO reservations (order_id, items, status) VALUES ($1, $2, 'RESERVED')`, [
+      orderId,
+      JSON.stringify(items),
+    ]);
+    await addToOutbox(
+      tx,
+      Topics.Inventory,
+      createEvent<InventoryReserved>('InventoryReserved', orderId, { orderId, items }, event),
+    );
   };
 
   /**

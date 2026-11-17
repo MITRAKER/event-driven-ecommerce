@@ -2,10 +2,7 @@ import { ShopEvent } from '@shop/contracts';
 
 export type OrderStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED';
 
-export type Transition =
-  | { next: 'CONFIRMED' }
-  | { next: 'CANCELLED'; reason: string }
-  | { next: null }; // no change
+export type Transition = { next: 'CONFIRMED' } | { next: 'CANCELLED'; reason: string } | { next: null }; // no change
 
 /**
  * The order's state machine, as a pure function: (current status, incoming event) -> transition.

@@ -22,12 +22,19 @@ export class OrderProjector extends EventConsumer {
   };
 
   protected readonly handlers = {
-    OrderCreated: this.apply, OrderConfirmed: this.apply, OrderCancelled: this.apply,
-    InventoryReserved: this.apply, InventoryRejected: this.apply,
-    PaymentSucceeded: this.apply, PaymentFailed: this.apply,
+    OrderCreated: this.apply,
+    OrderConfirmed: this.apply,
+    OrderCancelled: this.apply,
+    InventoryReserved: this.apply,
+    InventoryRejected: this.apply,
+    PaymentSucceeded: this.apply,
+    PaymentFailed: this.apply,
   };
 
-  constructor(db: Database, private readonly views: OrderViewRepository) {
+  constructor(
+    db: Database,
+    private readonly views: OrderViewRepository,
+  ) {
     super(db);
   }
 }
