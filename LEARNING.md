@@ -182,3 +182,54 @@ Exercises:
 1. Stop the payment service, place an order, and check that it stays `PENDING`. Start payment again and watch it finish. Events wait in Kafka, so nothing is lost.
 2. In Redpanda Console, follow one order's events by `correlationId` across all three topics.
 3. Hard: add a `ShippingScheduled` step after `PaymentSucceeded`. Which compensations would a shipping failure need?
+
+---
+
+## Step 4: CQRS, the read side
+
+### What we built
+`services/order-query-service` (port 3004). It consumes **all three topics** and keeps one wide `order_view` row per order:
+- `GET /orders/:id`: status, inventory result, payment result, cancel reason, and a full **event timeline** (an order-tracking page)
+- `GET /customers/:customerId/orders`: a "my orders" page
+- `GET /stats`: order count and revenue by status (a mini admin dashboard)
+
+It has no Kafka producer and no outbox, and it never writes anywhere except its own database.
+
+### What CQRS means
+**Command Query Responsibility Segregation:** use different models (and here, different services and databases) for **writing** and for **reading**.
+- **Command side** (order, inventory and payment services): normalised tables designed to enforce rules correctly: locks, constraints, state machines.
+- **Query side** (this service): a denormalised table designed for what screens need, with zero joins. To show one order you'd otherwise need data from three services and three databases. Here it's one primary-key lookup.
+
+The two sides are connected by events. The read model is a **projection**: a fold of the event stream (`events.reduce(project, emptyView)`), which is literally how the tests build it.
+
+### Trade-offs to be able to explain
+- **Eventual consistency.** Right after `POST /orders`, the query service may not have the order yet (a few milliseconds of lag). That's why `GET /orders/:id` returns a 404 that says "may not be projected yet". UIs handle this by showing "processing…", polling, or reading their own write from the command side.
+- **More moving parts.** Don't use CQRS for a simple CRUD app. It pays off when reads and writes have very different shapes or loads (e.g. 100× more reads than writes, or reads that need data from several services).
+- **Scaling.** Reads and writes scale separately: add read replicas or swap Postgres for Elasticsearch or Redis on the query side without touching the command side.
+
+### The tricky part: ordering across topics
+Kafka guarantees order **only within one partition**. Our events for one order are spread over three topics, so the projector may see `PaymentFailed` before `OrderCreated`. The projector (`projection.ts`) is written so **any arrival order gives the same final view**:
+- each event fills in only the fields it owns
+- a final status is never overwritten by an earlier-stage event
+- the timeline is sorted by `occurredAt`, not by arrival
+
+The test `gives the same result no matter what order events arrive in` replays events backwards and checks the result is identical. It caught a real bug while I was writing it: a reservation arriving *after* the cancel showed as `RESERVED` instead of `RELEASED`.
+
+### Rebuilding a projection, a CQRS superpower
+The view is **disposable**. Want a new column, or found a bug in the projector? Fix the code, `TRUNCATE order_view`, start with a new consumer group (`PROJECTION_GROUP_ID=order-query-v2`) and it replays every topic from the beginning. This only works if Kafka keeps events long enough, which is why event-sourced systems often set topic retention to "forever" or use compacted topics.
+
+### CQRS vs event sourcing (often confused)
+- **Event sourcing:** the *write side's* source of truth is the event log itself (no `orders` table, just events, and current state = replay).
+- **We are not event-sourced:** our write side stores current state in normal tables and publishes events via the outbox. CQRS and event sourcing are often used together, but each works without the other.
+
+### Try it yourself
+```bash
+npm run build && npm run start:query          # alongside the other three services
+curl localhost:3004/orders/<orderId>         # look at "timeline"
+curl localhost:3004/customers/c-1/orders
+curl localhost:3004/stats
+```
+Exercises:
+1. Stop the query service, place 5 orders, start it again and watch it catch up.
+2. Rebuild the view: `TRUNCATE order_view;` in the `order_query` DB, then restart with `PROJECTION_GROUP_ID=order-query-v2`.
+3. Add a `cancelledBecauseOutOfStock` count to `/stats` *without touching any other service*. That's the point of CQRS.
