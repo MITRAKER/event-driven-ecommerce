@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "envelope.schema.json",
+  "title": "EventEnvelope",
+  "description": "Every event on every topic is wrapped in this envelope.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "aggregateId", "correlationId", "payload"],
+  "properties": {
+    "eventId": { "type": "string", "format": "uuid", "description": "Unique id; consumers use it for idempotency." },
+    "eventType": { "type": "string", "examples": ["OrderCreated", "InventoryReserved"] },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "aggregateId": { "type": "string", "description": "Order id; also the Kafka message key, so all events of one order stay ordered." },
+    "correlationId": { "type": "string" },
+    "causationId": { "type": "string", "description": "eventId of the event that caused this one." },
+    "payload": { "type": "object" }
+  }
+}
