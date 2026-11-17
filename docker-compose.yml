@@ -1,16 +1,36 @@
+# Infra only:   docker compose up -d redpanda redpanda-console postgres
+# Everything:   docker compose up -d --build
+x-service: &service
+  build: { context: ., dockerfile: Dockerfile }
+  restart: unless-stopped
+  depends_on:
+    redpanda: { condition: service_healthy }
+    postgres: { condition: service_healthy }
+
 services:
   redpanda:
     image: redpandadata/redpanda:v24.2.7
     command:
-      - redpanda start --overprovisioned --smp 1 --memory 512M --reserve-memory 0M
-      - --kafka-addr PLAINTEXT://0.0.0.0:9092 --advertise-kafka-addr PLAINTEXT://localhost:9092
-    ports: ["9092:9092"]
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      # containers reach the broker as redpanda:9092, your laptop as localhost:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 3s
+      retries: 30
+
   redpanda-console:
     image: redpandadata/console:v2.7.2
     environment:
       KAFKA_BROKERS: redpanda:9092
     ports: ["8080:8080"]
     depends_on: [redpanda]
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -19,3 +39,31 @@ services:
     ports: ["5432:5432"]
     volumes:
       - ./infra/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop"]
+      interval: 3s
+      retries: 30
+
+  order-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: order-service } }
+    environment: { KAFKA_BROKERS: "redpanda:9092", DATABASE_URL: "postgres://shop:shop@postgres:5432/orders" }
+    ports: ["3001:3001"]
+
+  inventory-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: inventory-service } }
+    environment: { KAFKA_BROKERS: "redpanda:9092", DATABASE_URL: "postgres://shop:shop@postgres:5432/inventory" }
+    ports: ["3002:3002"]
+
+  payment-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: payment-service } }
+    environment: { KAFKA_BROKERS: "redpanda:9092", DATABASE_URL: "postgres://shop:shop@postgres:5432/payments" }
+    ports: ["3003:3003"]
+
+  order-query-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: order-query-service } }
+    environment: { KAFKA_BROKERS: "redpanda:9092", DATABASE_URL: "postgres://shop:shop@postgres:5432/order_query" }
+    ports: ["3004:3004"]

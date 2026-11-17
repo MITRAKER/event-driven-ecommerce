@@ -233,3 +233,50 @@ Exercises:
 1. Stop the query service, place 5 orders, start it again and watch it catch up.
 2. Rebuild the view: `TRUNCATE order_view;` in the `order_query` DB, then restart with `PROJECTION_GROUP_ID=order-query-v2`.
 3. Add a `cancelledBecauseOutOfStock` count to `/stats` *without touching any other service*. That's the point of CQRS.
+
+---
+
+## Step 5: Reliability, Docker, end-to-end tests, CI
+
+### What we built
+- **Retries with exponential backoff** (`packages/messaging/src/retry.ts`): a failed event is retried after 200 ms, then 400 ms, before being given up on.
+- **Dead-letter topics** (`orders.dlq`, `inventory.dlq`, `payments.dlq`): after the last retry, the message is copied to `<topic>.dlq` with headers explaining what failed (`dlq-error`, original topic, partition, offset, consumer group), and the consumer moves on.
+- **Explicit topic creation** (`ensureTopics()`): 3 partitions per topic, created on startup by whichever service starts first.
+- **One Dockerfile for all services** plus a full `docker-compose.yml` with health checks. `docker compose up -d --build` runs the whole system.
+- **End-to-end test** (`tests/e2e/e2e.mjs`): a black-box test that drives the real system over HTTP. It covers the happy path, payment declined, out of stock, and checks that compensation restored the stock.
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): job 1 runs the build and unit tests, and job 2 starts everything in Docker and runs the end-to-end test.
+- **README** with an architecture diagram and a pattern table, written for recruiters and interviewers.
+
+### Why retries AND a dead-letter queue?
+There are two very different kinds of failure:
+- **Transient**, like the DB restarting or a network blip. Trying again a moment later works. → **Retry with backoff.** Backoff matters because hammering a struggling database makes it worse.
+- **Poison**, like a malformed message or a bug for one specific input. It fails every time. If you retry forever, that message blocks its whole partition, so every order behind it is stuck. → **Dead-letter it** and keep going.
+
+What happens to DLQ messages? In real systems you alert on DLQ size (Step 5 of the Observability project could do this!), inspect the messages, fix the bug, then **replay** them back to the main topic.
+
+**Trade-off to mention in interviews:** dead-lettering breaks per-key ordering. If event 2 of an order is parked and event 3 is processed, the order may end up inconsistent. Our state machine and projection tolerate this (they ignore events that don't apply), but it's why some teams *stop the partition* instead of skipping when ordering is critical.
+
+### Why retries live inside the consumer, not in Kafka
+Kafka has no built-in per-message retry or delay. Options are:
+1. **In-process retry** (what we do): simple, but it holds up the partition for a few hundred ms.
+2. **Retry topics** (`orders.retry.1m`, `orders.retry.10m`, ...): the failed message goes to a delay topic and a separate consumer re-publishes it later. Non-blocking, but more topics and more code. Uber's engineering blog has a well-known write-up on this approach.
+
+### Why test end-to-end at all, when there are unit tests?
+Unit tests prove each piece of logic. Only an end-to-end test proves the *wiring*: topic names match, events serialise correctly, consumer groups subscribe to the right topics, migrations run, and services find each other in Docker. Both kinds catch different bugs, which is the testing pyramid: many fast unit tests, a few slow end-to-end tests.
+
+### Docker details worth knowing
+- **Multi-stage build:** stage 1 has compilers and dev dependencies, and stage 2 only copies the built result. The image is smaller and has less attack surface.
+- **`USER node`:** don't run containers as root.
+- **Two Kafka listeners:** containers reach the broker as `redpanda:9092` and your laptop as `localhost:19092`. Kafka tells clients which address to reconnect to (the *advertised* address), so a single address can't work for both. This is the #1 "why can't I connect to Kafka in Docker" problem.
+- **Health checks + `depends_on: condition: service_healthy`:** services wait for Kafka and Postgres to be ready, not just started.
+
+### Try it yourself
+```bash
+docker compose up -d --build
+node tests/e2e/e2e.mjs
+```
+Exercises:
+1. Make a poison pill: in Redpanda Console, produce `not json` to the `orders` topic. Check the inventory logs, then find the message in `orders.dlq` with its error headers.
+2. Simulate a transient failure: `docker compose stop postgres` for 1 second while placing an order, and watch the `retry 1 for ...` log lines.
+3. Scale out: `docker compose up -d --scale inventory-service=3` (remove its fixed port first). With 3 partitions, Kafka gives each replica one partition. Check the consumer group in Console.
+4. Write a tiny `dlq-replay` script that reads `orders.dlq` and re-publishes each message to its `dlq-original-topic`.
