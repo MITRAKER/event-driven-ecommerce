@@ -92,3 +92,93 @@ curl -X POST localhost:3001/orders -H 'content-type: application/json' \
 Watch the `orders` topic in Redpanda Console (http://localhost:8080).
 
 Exercise: stop Kafka (`docker compose stop redpanda`), create three orders, then run `SELECT id, published_at FROM outbox;` in the `orders` database. Start Kafka again and watch the relay catch up. That's the outbox doing its job.
+
+---
+
+## Step 3: Inventory, payment, and the saga with compensation
+
+### What we built
+```
+packages/messaging/            shared plumbing every service now reuses
+  schema.ts                    outbox + processed_events tables
+  inbox.ts                     claimEvent(): dedupe by eventId
+  event.consumer.ts            base class: Kafka message -> BEGIN, claim, handle, COMMIT
+  outbox.relay.ts, database.ts, kafka.ts   (moved here from order-service)
+services/inventory-service     reserves stock on OrderCreated, releases it on OrderCancelled
+services/payment-service       charges (fake) on InventoryReserved
+services/order-service/src/saga  state machine + consumer that settles the order
+```
+
+### The whole flow
+```
+             order-service          inventory-service         payment-service
+POST /orders ──► OrderCreated ──────► reserve stock
+                                      ├─ ok ──► InventoryReserved ──► charge card
+                                      │                               ├─ ok ──► PaymentSucceeded ─┐
+                                      │                               └─ no ──► PaymentFailed ────┤
+                                      └─ no ──► InventoryRejected ───────────────────────────────┤
+                                                                                                  ▼
+             order-service settles: PENDING ──► CONFIRMED  (OrderConfirmed)
+                                     PENDING ──► CANCELLED  (OrderCancelled) ──► inventory releases stock
+```
+Try it: order a `LAPTOP` (price above $1,000) and payment declines. Watch `GET localhost:3002/products`: the laptop count goes down when it's reserved, then back up when the order is cancelled. That's **compensation**.
+
+### Why a saga?
+In a monolith you'd wrap "reserve stock + charge card + confirm order" in one database transaction. Here those are three services with three databases, so there's no shared transaction. (Two-phase commit exists, but it is slow, fragile, and Kafka doesn't support it.)
+
+A **saga** replaces one big transaction with a chain of small local ones. Each step commits on its own and publishes an event. If a later step fails, earlier steps are **undone by compensating actions**, which are new business operations that reverse the effect ("release the stock"). It's not a rollback, because the stock really was held for a few moments.
+
+### Choreography vs orchestration
+- **Choreography (what we built):** no central boss. Each service reacts to events and emits new ones. It's loosely coupled and simple for 3–4 steps, but the overall flow is spread across services, so you need a diagram like the one above to see it.
+- **Orchestration:** one "saga orchestrator" sends commands ("ReserveStock", "ChargeCard") and tracks state. The flow is easier to follow and change, but there's one more component, and it can become a "god service". Tools like Temporal are built for this.
+- **Interview answer:** choreography for short flows, orchestration when the flow has many steps, branches, or timeouts.
+
+### Idempotent consumers (the other half of Step 2's promise)
+The outbox guarantees *at-least-once*, so consumers *will* see duplicates sometimes. `EventConsumer.process()` does this in **one transaction**:
+1. `INSERT INTO processed_events (event_id) ... ON CONFLICT DO NOTHING`. If 0 rows were inserted, it's a duplicate, so skip it.
+2. Run the handler (business change + outbox rows).
+3. `COMMIT`, then Kafka commits the offset.
+
+Because the dedupe row and the business change commit together, a crash anywhere means *both* are rolled back and the redelivery is processed cleanly. Together: **at-least-once delivery + idempotent processing = effectively exactly-once.** This sentence is worth memorising.
+
+Extra safety nets, in layers:
+- `payments.order_id` is the PRIMARY KEY, so the database itself refuses a second charge for one order.
+- The inventory release only touches reservations with `status = 'RESERVED'`, so releasing twice is impossible.
+- The order state machine only moves from `PENDING`, so a late `PaymentSucceeded` after a cancel does nothing.
+
+### Concurrency details
+- **`SELECT ... FOR UPDATE`** on product rows: two orders for the last keyboard can't both succeed. The second one waits for the first to commit, then sees 0 left.
+- **`ORDER BY sku`** when locking: if order A locks BOOK then MUG while order B locks MUG then BOOK, they deadlock. Always locking in the same order prevents it.
+- **`CHECK (available >= 0)`**: the last line of defence, enforced by the database even if the code has a bug.
+- **Message key = order id**: all events for one order land in one partition, so they're consumed in order.
+
+### Design pattern: functional core, imperative shell
+The decisions are **pure functions** with no database and no Kafka: `nextState()` (order), `decideReservation()` (inventory), and `charge()` (payment). The consumers are thin shells that load data, call the pure function, and write results. That's why the business rules have fast, simple unit tests (19 tests across the repo now).
+
+### Why events carry data ("event-carried state transfer")
+`InventoryReserved` includes the items and prices, so the payment service can compute the amount **without calling the order service**. If services call each other synchronously to fill gaps, you get a distributed monolith: one service down means everything is down.
+
+### Try it yourself
+```bash
+docker compose up -d && npm install && npm run build
+npm run start:inventory   # terminal 1
+npm run start:payment     # terminal 2
+npm run start:order       # terminal 3
+
+# happy path -> CONFIRMED
+curl -X POST localhost:3001/orders -H 'content-type: application/json' \
+  -d '{"customerId":"c-1","items":[{"sku":"BOOK","quantity":1,"unitPriceCents":4500}]}'
+# payment fails -> CANCELLED, and laptop stock comes back
+curl -X POST localhost:3001/orders -H 'content-type: application/json' \
+  -d '{"customerId":"c-1","items":[{"sku":"LAPTOP","quantity":1,"unitPriceCents":150000}]}'
+# out of stock -> CANCELLED (only 2 keyboards exist)
+curl -X POST localhost:3001/orders -H 'content-type: application/json' \
+  -d '{"customerId":"c-1","items":[{"sku":"KEYBOARD","quantity":3,"unitPriceCents":9000}]}'
+
+curl localhost:3001/orders/<orderId>     # status
+curl localhost:3002/products             # stock
+```
+Exercises:
+1. Stop the payment service, place an order, and check that it stays `PENDING`. Start payment again and watch it finish. Events wait in Kafka, so nothing is lost.
+2. In Redpanda Console, follow one order's events by `correlationId` across all three topics.
+3. Hard: add a `ShippingScheduled` step after `PaymentSucceeded`. Which compensations would a shipping failure need?
