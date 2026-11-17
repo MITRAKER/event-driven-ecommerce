@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "start": "SERVICE_NAME=payment-service DATABASE_URL=${DATABASE_URL:-postgres://shop:shop@localhost:5432/payments} node dist/main.js",
+    "start": "SERVICE_NAME=payment-service PORT=${PORT:-3003} DATABASE_URL=${DATABASE_URL:-postgres://shop:shop@localhost:5432/payments} node dist/main.js",
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json"
   },
