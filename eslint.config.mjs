@@ -63,7 +63,8 @@ const JPL_RULES = {
   // JPL-7: check every return value, validate every parameter
   '@typescript-eslint/no-floating-promises': 'error',
   '@typescript-eslint/no-misused-promises': 'error',
-  '@typescript-eslint/strict-boolean-expressions': 'error',
+  // No truthiness tricks: 0 and '' are falsy, so `if (count)` and `if (name)` hide bugs. Compare explicitly.
+  '@typescript-eslint/strict-boolean-expressions': ['error', { allowNumber: false, allowString: false }],
   '@typescript-eslint/switch-exhaustiveness-check': ['error', { considerDefaultExhaustiveForUnions: true }],
   '@typescript-eslint/explicit-function-return-type': ['error', { allowExpressions: true }],
   '@typescript-eslint/return-await': ['error', 'always'],

@@ -5,9 +5,12 @@
  */
 module.exports = {
   projects: ['<rootDir>/packages/*', '<rootDir>/services/*'],
+  // These globs are matched against paths relative to each project's rootDir, which is the
+  // workspace's src/ folder (see the "jest" block in its package.json). A glob written from the
+  // repository root, like 'services/*/src/**/*.ts', would match nothing, and Jest then reports
+  // 0/0 lines as "Unknown%" and lets every threshold pass. CI fails the build if that happens.
   collectCoverageFrom: [
-    'packages/*/src/**/*.ts',
-    'services/*/src/**/*.ts',
+    '**/*.ts',
     '!**/*.spec.ts',
     '!**/main.ts',
     '!**/app.module.ts',
@@ -16,6 +19,6 @@ module.exports = {
   ],
   coverageReporters: ['text-summary', 'text', 'lcov', 'json-summary'],
   coverageThreshold: {
-    global: { statements: 80, branches: 70, functions: 80, lines: 80 },
+    global: { statements: 90, branches: 85, functions: 90, lines: 90 },
   },
 };
