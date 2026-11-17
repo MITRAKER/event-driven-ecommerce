@@ -42,9 +42,10 @@ export class Database implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
-   * Apply the shared messaging tables, then every .sql file in `dir` in name order.
-   * The advisory lock makes replicas that start at the same time take turns, because
-   * concurrent CREATE TABLE IF NOT EXISTS can still collide inside Postgres.
+   * Apply the shared messaging tables, then every .sql file in `dir` that has not been
+   * applied yet, in name order, recording each one in schema_migrations. A migration runs
+   * exactly once, so a file is never edited after it ships: you add a new one instead.
+   * The advisory lock makes replicas that start at the same time take turns.
    */
   async migrate(dir: string): Promise<void> {
     const files = existsSync(dir)
@@ -55,8 +56,11 @@ export class Database implements OnModuleInit, OnApplicationShutdown {
     await this.transaction(async (tx) => {
       await tx.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_ID]);
       await tx.query(MESSAGING_TABLES_SQL);
-      for (const file of files) {
+      const { rows } = await tx.query<{ name: string }>('SELECT name FROM schema_migrations');
+      const applied = new Set(rows.map((r) => r.name));
+      for (const file of files.filter((f) => !applied.has(f))) {
         await tx.query(readFileSync(join(dir, file), 'utf8'));
+        await tx.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
         this.logger.log(`migration applied: ${file}`);
       }
     });
