@@ -526,6 +526,16 @@ Three more workflows add security in depth:
 
 Two habits in the workflow files are worth copying. Every workflow declares its `permissions:` explicitly, so the automatic `GITHUB_TOKEN` gets only what that workflow needs: CI can only read the code, and only the release workflow may push tags and images (the principle of least privilege). And CI's `concurrency` setting cancels an outdated run when you push again, so you don't wait for checks on code that no longer exists.
 
+#### What the first CI run caught
+
+The first run of these checks, on the pull request that added them, went red twice. Both failures were worth having:
+
+- **`npm audit` found real vulnerabilities.** NestJS 10 depends on Express 4, whose `body-parser` and `multer` packages had known high-severity denial-of-service bugs. Our own code was fine: the risk came in through a dependency of a dependency. The fix was upgrading to NestJS 11, which uses Express 5. The unit tests, the end-to-end test and a smoke test of the real HTTP routes (validation, the 64 kB body limit, error codes) all passed unchanged. New advisories are published every week, so a package that was safe when you added it can be flagged later. That's why the audit runs on every pull request.
+- **One upgrade, two copies.** The first install after the upgrade put a separate copy of `@nestjs/common` inside every workspace, and a unit test failed: it watched one copy's `Logger` while the code logged through another. Nest compares some classes with `instanceof` and keeps settings such as the log level in static fields, so two copies can quietly disagree in production too. `npm dedupe` moved everything back to one copy at the root. After any framework upgrade, check that `npm ls @nestjs/common` lists a single version.
+- **Dependency review needs a setting.** It stopped with "Dependency review is not supported on this repository. Please ensure that Dependency graph is enabled", which is a repository setting, not a code problem (see [GitHub settings that complete the setup](#github-settings-that-complete-the-setup)).
+
+The same run warned that several actions still ran on Node.js 20, which GitHub is retiring, so the first-party ones moved to their Node.js 24 versions (`actions/checkout@v5`, `actions/setup-node@v5`, `actions/upload-artifact@v6` and `github/codeql-action@v4`). Dependabot proposes the rest as their publishers release them.
+
 ### CD: from merge to a published release
 
 `.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please):
@@ -573,7 +583,7 @@ Some protections live in the repository's settings on GitHub, not in files, so t
 1. **Rules for `main`** (Settings → Rules → Rulesets, or Branches → Branch protection): require a pull request, require the CI checks to pass, and block force pushes and deletion.
 2. **Settings → Actions → General → Workflow permissions:** tick "Allow GitHub Actions to create and approve pull requests". release-please needs it to open the release PR.
 3. **Settings → General → Pull Requests:** allow squash merging with the PR title as the commit message, and tick "Automatically delete head branches".
-4. **Settings → Security** (called "Code security" or "Advanced Security" depending on your account): turn on private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
+4. **Settings → Security** (called "Code security" or "Advanced Security" depending on your account): turn on the dependency graph (the dependency review check needs it), private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
 
 ### Try it yourself
 
