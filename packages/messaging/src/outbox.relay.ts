@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { Database } from '../infra/database';
-import { KafkaProducer } from '../infra/kafka';
+import { Database } from './database';
+import { KafkaProducer } from './kafka';
 
 /**
  * The outbox relay: polls the outbox table and publishes rows to Kafka.

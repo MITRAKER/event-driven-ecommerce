@@ -1,20 +1,20 @@
-import { Injectable, OnModuleDestroy, OnModuleInit, Logger } from '@nestjs/common';
-import { readFileSync, readdirSync } from 'node:fs';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Pool, PoolClient } from 'pg';
+import { MESSAGING_TABLES_SQL } from './schema';
 
-/** Thin wrapper around a pg connection pool. Plain SQL on purpose: you see exactly what runs. */
+/** Thin wrapper around a pg pool. Plain SQL on purpose: you see exactly what runs. */
 @Injectable()
 export class Database implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(Database.name);
-  readonly pool = new Pool({
-    connectionString: process.env.DATABASE_URL ?? 'postgres://shop:shop@localhost:5432/orders',
-  });
+  readonly pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
   async onModuleInit() {
-    // Tiny migration runner: applies every .sql file in /migrations in name order.
-    // (Every statement is idempotent: CREATE ... IF NOT EXISTS.)
-    const dir = join(__dirname, '..', '..', 'migrations');
+    // Every service gets the outbox + processed_events tables, then its own migrations.
+    await this.pool.query(MESSAGING_TABLES_SQL);
+    const dir = join(process.cwd(), 'migrations');
+    if (!existsSync(dir)) return;
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
       await this.pool.query(readFileSync(join(dir, file), 'utf8'));
       this.logger.log(`migration applied: ${file}`);
