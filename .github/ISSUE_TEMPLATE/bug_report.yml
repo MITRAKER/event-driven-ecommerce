@@ -1,0 +1,71 @@
+name: Bug report
+description: Something doesn't work as documented.
+title: 'bug: '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please check the [existing issues](https://github.com/MITRAKER/event-driven-ecommerce/issues) first.
+        **Security problems must not be reported here:** follow the [security policy](https://github.com/MITRAKER/event-driven-ecommerce/security/policy) instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - order-service
+        - inventory-service
+        - payment-service
+        - order-query-service
+        - packages/contracts or packages/messaging
+        - Docker / docker-compose
+        - CI/CD or tooling
+        - Documentation (README, LEARNING.md, docs)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including any error message.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or requests, for example the `curl` call and its body.
+      placeholder: |
+        1. docker compose up -d --build --wait
+        2. curl -X POST localhost:3001/orders -H 'content-type: application/json' -d '...'
+        3. curl localhost:3004/orders/<orderId>
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Service logs (`docker compose logs <service>`) or test output. This is formatted as code automatically.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The release (for example v0.1.0) or the commit SHA you ran.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node.js version (`node --version`) and Docker version (`docker --version`).
+      placeholder: Ubuntu 24.04, Node 22.13.0, Docker 27.3
+    validations:
+      required: true

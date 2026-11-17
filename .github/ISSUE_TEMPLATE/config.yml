@@ -1,0 +1,6 @@
+# Every issue must use one of the forms in this folder, so reports arrive with the details we need.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/MITRAKER/event-driven-ecommerce/security/policy
+    about: Please report vulnerabilities privately, as the security policy describes, never in a public issue.

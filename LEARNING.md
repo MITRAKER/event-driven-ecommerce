@@ -34,7 +34,7 @@ This file grows with every step. Each section covers what was built, why it was 
 ### Try it yourself
 
 ```bash
-docker compose up -d
+docker compose up -d redpanda redpanda-console postgres   # just the infrastructure
 # open http://localhost:8080, then create a topic called "orders"
 docker compose exec redpanda rpk topic produce orders --key order-1
 # type a JSON line and press Enter, then watch it appear in the Console
@@ -78,9 +78,9 @@ Write the event into a table _in the same database transaction_ as the order (`o
 ### Design choices worth understanding
 
 - **`FOR UPDATE SKIP LOCKED`** in the relay query. If you run three copies of the service, each relay locks a different batch of rows instead of all three sending the same events. This is a classic Postgres job-queue trick.
-- **`ORDER BY id`** with a `BIGSERIAL` id preserves the order in which events were created.
+- **`ORDER BY id`** with a `BIGSERIAL` id sends events roughly in the order they were created. Roughly, because ids are handed out when a row is inserted, while transactions commit in their own order: id 12 can become visible before id 11. That's fine here, because order only matters _per order_ (per Kafka key), and one order's events are causally chained: each one is written only after the previous one was published and handled downstream, so they can never overtake each other.
 - **At-least-once delivery.** If the relay crashes _after_ Kafka accepted a batch but _before_ the `UPDATE ... published_at`, that batch is sent again. You cannot get exactly-once for free across two systems, so the rule is: **producers may duplicate, and consumers must be idempotent.** We build idempotent consumers in Step 3.
-- **Idempotent producer** (`idempotent: true` in `kafka.ts`). This stops duplicates caused by the Kafka client's own network retries. It does _not_ cover the crash case above, which is why consumer idempotency still matters.
+- **Bounded producer retries** (`retry: { retries: 5 }` and `maxInFlightRequests: 1` in `kafka.ts`). The first version used Kafka's _idempotent producer_, which removes duplicates caused by the client's own network retries. In kafkajs that mode expects unlimited retries, and Step 6 makes every retry loop bounded, so we switched it off. Nothing is lost: if a send still fails, the rows stay unpublished and the next relay tick tries again, and consumers deduplicate anyway (they have to, because of the crash case above). `maxInFlightRequests: 1` keeps a retried batch from overtaking the next one.
 - **HTTP 202 Accepted** instead of 201. The order is accepted, but whether it ends up confirmed or cancelled is decided later by other services. The client polls `GET /orders/:id` (or, later, the query service).
 - **Plain SQL instead of an ORM.** For learning, seeing the exact `BEGIN / INSERT / INSERT / COMMIT` makes the pattern obvious. In a bigger codebase you might use Prisma or TypeORM. The pattern stays the same.
 - **A shared `@shop/contracts` package.** Every service imports the same event types, so if a payload changes, the TypeScript compiler shows every place that breaks.
@@ -98,12 +98,14 @@ Write the event into a table _in the same database transaction_ as the order (`o
 ### Try it yourself
 
 ```bash
-docker compose up -d
-npm install && npm run build
-npm start -w @shop/order-service
+docker compose up -d redpanda redpanda-console postgres   # infrastructure only; the service runs on your machine
+npm ci && npm run build
+npm run start:order
 curl -X POST localhost:3001/orders -H 'content-type: application/json' \
-  -d '{"customerId":"c-1","items":[{"sku":"BOOK","quantity":2,"unitPriceCents":1500}]}'
+  -d '{"customerId":"c-1","items":[{"sku":"BOOK","quantity":2,"unitPriceCents":4500}]}'
 ```
+
+(A plain `docker compose up -d` would also start the Dockerised services from Step 5, which already use ports 3001 to 3004.)
 
 Watch the `orders` topic in Redpanda Console (http://localhost:8080).
 
@@ -173,7 +175,7 @@ Extra safety nets, in layers:
 ### Concurrency details
 
 - **`SELECT ... FOR UPDATE`** on product rows: two orders for the last keyboard can't both succeed. The second one waits for the first to commit, then sees 0 left.
-- **`ORDER BY sku`** when locking: if order A locks BOOK then MUG while order B locks MUG then BOOK, they deadlock. Always locking in the same order prevents it.
+- **`ORDER BY sku`** when locking: if order A locks BOOK then MUG while order B locks MUG then BOOK, they deadlock. Always locking in the same order prevents it. The rule has to hold on _every_ path that touches those rows: the release (compensation) gives stock back in sku order too. (The first version released in the order items were listed; a review caught it in Step 6.)
 - **`CHECK (available >= 0)`**: the last line of defence, enforced by the database even if the code has a bug.
 - **Message key = order id**: all events for one order land in one partition, so they're consumed in order.
 
@@ -188,7 +190,7 @@ The decisions are **pure functions** with no database and no Kafka: `nextState()
 ### Try it yourself
 
 ```bash
-docker compose up -d && npm install && npm run build
+docker compose up -d redpanda redpanda-console postgres && npm ci && npm run build
 npm run start:inventory   # terminal 1
 npm run start:payment     # terminal 2
 npm run start:order       # terminal 3
@@ -248,13 +250,17 @@ Kafka guarantees order **only within one partition**. Our events for one order a
 
 - each event fills in only the fields it owns
 - a final status is never overwritten by an earlier-stage event
-- the timeline is sorted by `occurredAt`, not by arrival
+- the timeline is sorted by `occurredAt`, not by arrival (with the event type as a tie-break, so two events with the same timestamp always come out in the same order)
 
 The test `gives the same result no matter what order events arrive in` replays events backwards and checks the result is identical. It caught a real bug while I was writing it: a reservation arriving _after_ the cancel showed as `RESERVED` instead of `RELEASED`.
 
 ### Rebuilding a projection, a CQRS superpower
 
-The view is **disposable**. Want a new column, or found a bug in the projector? Fix the code, `TRUNCATE order_view`, start with a new consumer group (`PROJECTION_GROUP_ID=order-query-v2`) and it replays every topic from the beginning. This only works if Kafka keeps events long enough, which is why event-sourced systems often set topic retention to "forever" or use compacted topics.
+The view is **disposable**. Want a new column, or found a bug in the projector? Fix the code, empty the view **and the inbox** with `TRUNCATE order_view, processed_events;`, then start with a new consumer group (`PROJECTION_GROUP_ID=order-query-v2`) and it replays every topic from the beginning.
+
+Why the inbox too? `processed_events` remembers every event id the projector has already applied (that's how it skips duplicates). If you keep it, every replayed event looks like a duplicate and the rebuilt view stays empty. And why a new group id? Kafka remembers how far each consumer group has read; a new group has no position yet, so it starts from the first message.
+
+This only works if Kafka keeps events long enough, which is why event-sourced systems often set topic retention to "forever" or use compacted topics.
 
 ### CQRS vs event sourcing (often confused)
 
@@ -273,7 +279,7 @@ curl localhost:3004/stats
 Exercises:
 
 1. Stop the query service, place 5 orders, start it again and watch it catch up.
-2. Rebuild the view: `TRUNCATE order_view;` in the `order_query` DB, then restart with `PROJECTION_GROUP_ID=order-query-v2`.
+2. Rebuild the view: stop the query service, run `docker compose exec postgres psql -U shop -d order_query -c 'TRUNCATE order_view, processed_events;'`, then start it again with `PROJECTION_GROUP_ID=order-query-v2 npm run start:query`. Every order comes back.
 3. Add a `cancelledBecauseOutOfStock` count to `/stats` _without touching any other service_. That's the point of CQRS.
 
 ---
@@ -282,8 +288,8 @@ Exercises:
 
 ### What we built
 
-- **Retries with exponential backoff** (`packages/messaging/src/retry.ts`): a failed event is retried after 200 ms, then 400 ms, before being given up on.
-- **Dead-letter topics** (`orders.dlq`, `inventory.dlq`, `payments.dlq`): after the last retry, the message is copied to `<topic>.dlq` with headers explaining what failed (`dlq-error`, original topic, partition, offset, consumer group), and the consumer moves on.
+- **Retries with exponential backoff** (`packages/messaging/src/retry.ts`): a failed event is tried up to 5 times, waiting 200, 400, 800 and then 1,600 ms in between (`CONSUMER_RETRY_ATTEMPTS` and `CONSUMER_RETRY_BASE_MS` change this).
+- **Dead-letter topics** (`orders.dlq`, `inventory.dlq`, `payments.dlq`): after the last retry, the message is copied to `<topic>.dlq` with headers explaining what failed (`dlq-error`, original topic, partition, offset, consumer group), and the consumer moves on. (Step 6 refines which failures end up there: a database outage never does.)
 - **Explicit topic creation** (`ensureTopics()`): 3 partitions per topic, created on startup by whichever service starts first.
 - **One Dockerfile for all services** plus a full `docker-compose.yml` with health checks. `docker compose up -d --build` runs the whole system.
 - **End-to-end test** (`tests/e2e/e2e.mjs`): a black-box test that drives the real system over HTTP. It covers the happy path, payment declined, out of stock, and checks that compensation restored the stock.
@@ -296,6 +302,8 @@ There are two very different kinds of failure:
 
 - **Transient**, like the DB restarting or a network blip. Trying again a moment later works. → **Retry with backoff.** Backoff matters because hammering a struggling database makes it worse.
 - **Poison**, like a malformed message or a bug for one specific input. It fails every time. If you retry forever, that message blocks its whole partition, so every order behind it is stuck. → **Dead-letter it** and keep going.
+
+Step 6 splits "transient" in two, because a review showed this version had a nasty gap: during a 10-second database restart, _healthy_ events used up their retries and were dead-lettered. See "Three kinds of failure" in Step 6.
 
 What happens to DLQ messages? In real systems you alert on DLQ size (Step 5 of the Observability project could do this!), inspect the messages, fix the bug, then **replay** them back to the main topic.
 
@@ -314,16 +322,18 @@ Unit tests prove each piece of logic. Only an end-to-end test proves the _wiring
 
 ### Docker details worth knowing
 
-- **Multi-stage build:** stage 1 has compilers and dev dependencies, and stage 2 only copies the built result. The image is smaller and has less attack surface.
+- **Multi-stage build:** the build stage installs every dependency, compiles TypeScript, then removes the dev dependencies (`npm prune --omit=dev`) and the TypeScript sources. The runtime stage copies only what is left: compiled JavaScript, SQL migrations, `package.json` files and production `node_modules`. The image is smaller and has less attack surface (no compiler, no test tools).
+- **`npm ci --ignore-scripts`:** installs exactly what `package-lock.json` says, and doesn't run any package's install scripts during the build (a common way for a malicious dependency to run code).
 - **`USER node`:** don't run containers as root.
+- **`CMD ["node", "dist/main.js"]`, not `npm start`:** when Docker stops a container it sends `SIGTERM` to the main process. If that process is npm, the signal isn't reliably passed on to Node, so the graceful shutdown (stop consumers, finish the relay tick, close the pool) may never run, and Docker kills the process after 10 seconds.
 - **Two Kafka listeners:** containers reach the broker as `redpanda:9092` and your laptop as `localhost:19092`. Kafka tells clients which address to reconnect to (the _advertised_ address), so a single address can't work for both. This is the #1 "why can't I connect to Kafka in Docker" problem.
-- **Health checks + `depends_on: condition: service_healthy`:** services wait for Kafka and Postgres to be ready, not just started.
+- **Health checks + `depends_on: condition: service_healthy`:** services wait for Kafka and Postgres to be ready, not just started. Each service's own health check calls `GET /health`, which runs `SELECT 1` against its database, so `docker compose up --wait` returns only when the whole system can actually serve requests.
 
 ### Try it yourself
 
 ```bash
-docker compose up -d --build
-node tests/e2e/e2e.mjs
+docker compose up -d --build --wait   # --wait returns once every health check passes
+npm run test:e2e                      # same as: node tests/e2e/e2e.mjs
 ```
 
 Exercises:
@@ -332,3 +342,262 @@ Exercises:
 2. Simulate a transient failure: `docker compose stop postgres` for 1 second while placing an order, and watch the `retry 1 for ...` log lines.
 3. Scale out: `docker compose up -d --scale inventory-service=3` (remove its fixed port first). With 3 partitions, Kafka gives each replica one partition. Check the consumer group in Console.
 4. Write a tiny `dlq-replay` script that reads `orders.dlq` and re-publishes each message to its `dlq-original-topic`.
+
+---
+
+## Step 6: Professional standards: NASA/JPL rules, strict tooling, CI/CD
+
+Steps 1 to 5 made the system _work_. This step makes the repository look and behave like one a professional team would trust: a coding standard that machines enforce, automated checks on every pull request, security scanning, automated releases, and the files every serious open-source repo has.
+
+### What we built
+
+```
+tsconfig.base.json            the strictest TypeScript settings, shared by every workspace
+eslint.config.mjs             type-aware linting + the NASA/JPL rules; zero warnings allowed
+tools/eslint-rules/           our own ESLint rule (no recursion) and its tests
+docs/CODING_STANDARD.md       the 10 rules, how each is adapted to TypeScript, and what enforces it
+packages/contracts/src/
+  invariant.ts                invariant() and assertNever(): runtime assertions
+  limits.ts                   every business bound in one place (items per order, max price, ...)
+  parse-event.ts              parseEvent(): untrusted JSON in, a typed event (or an error) out
+packages/messaging/src/
+  config.ts                   environment variables read once at startup and range-checked
+  errors.ts                   classifyFailure(): permanent, infrastructure or unknown
+.husky/, commitlint.config.mjs   git hooks: lint staged files, check commit messages
+.github/workflows/            CI, CodeQL, dependency review, release (CD)
+.github/dependabot.yml        weekly dependency-update pull requests
+CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, CHANGELOG.md, issue forms, PR template, CODEOWNERS
+```
+
+One command runs every check that CI runs (except the Docker ones): `npm run check`. It checks formatting, builds, lints, type-checks, runs the unit tests with coverage, and tests our own lint rule.
+
+### Why use a space-flight coding standard for a web shop?
+
+In 2006, Gerard Holzmann of NASA's Jet Propulsion Laboratory (JPL) published **"The Power of Ten: Rules for Developing Safety-Critical Code"**. The idea is simple: ten rules that are short enough to remember, and **strict enough that a tool can check them**. Code that follows them is simple enough for people to review and for analysers to reason about. You can't restart a Mars rover to fix a hung loop.
+
+Our backend will never leave Earth, but the same properties pay off in any system that must not lose data:
+
+- **Bounded loops and retries** mean a consumer can't hang forever on one message.
+- **Assertions** turn a bug into a loud, rolled-back error at the line that broke, instead of a corrupt row that surfaces three services later.
+- **Small functions** mean a reviewer can actually check them.
+
+The rules were written for C, so some need translating for TypeScript, which runs on a garbage-collected runtime. Here's the short version. [`docs/CODING_STANDARD.md`](docs/CODING_STANDARD.md) explains each rule in detail, including what our tools _can't_ check.
+
+| #   | Original rule (C)                                               | Our TypeScript version                                                                                                                                 | Enforced by                                                                                                                                 |
+| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Simple control flow: no `goto`, `setjmp`/`longjmp` or recursion | No labels, no `with`, no recursion                                                                                                                     | ESLint `no-restricted-syntax`, our `jpl/no-recursion`, `complexity`, `max-depth`                                                            |
+| 2   | Every loop has a fixed upper bound                              | No `while`, `do…while`, `for(;;)` or `for…in`. Only bounded `for` loops and array methods. Retries, batches and polling all have limits                | ESLint `no-restricted-syntax`, `no-constant-condition`; `withRetry` checks its own bounds                                                   |
+| 3   | No dynamic memory allocation after start-up                     | A garbage-collected language allocates all the time, so the spirit becomes: **every resource is bounded** (body size, pool size, batch size, timeouts) | `Limits`, range-checked config, 64 kb request bodies, pool `max` and timeouts                                                               |
+| 4   | A function fits on one printed page                             | ≤ 60 lines, ≤ 25 statements, ≤ 4 parameters, files ≤ 300 lines                                                                                         | ESLint `max-lines-per-function`, `max-statements`, `@typescript-eslint/max-params`, `max-lines`                                             |
+| 5   | At least two assertions per function, on average                | `invariant()` for "this can't happen" facts, such as the row count of every write                                                                      | `invariant()` and code review (no tool can count meaningful assertions)                                                                     |
+| 6   | Declare data in the smallest possible scope                     | No module-level `let`, no `var`, `const` by default, no shadowing, `readonly` fields                                                                   | ESLint `no-var`, `prefer-const`, `no-shadow`, `prefer-readonly`, `no-restricted-syntax`                                                     |
+| 7   | Check every return value and every parameter                    | No forgotten promises; every input is parsed at the boundary; every write checks its row count                                                         | ESLint `no-floating-promises`, `strict-boolean-expressions`, `switch-exhaustiveness-check`; `parseEvent`, DTO validation, config validation |
+| 8   | Limit the preprocessor                                          | No code that writes or loads code at runtime: no `eval`, `new Function` or dynamic `import()`                                                          | ESLint `no-eval`, `no-new-func`, `no-restricted-syntax`                                                                                     |
+| 9   | Restrict pointers; no function pointers                         | No `any`, no non-null `!`, and no tables of handler functions: dispatch with `switch`, so the call graph is static                                     | ESLint `no-explicit-any`, `no-unsafe-*`, `no-non-null-assertion`, `no-restricted-syntax`                                                    |
+| 10  | All warnings on, zero warnings, static analysers every day      | The strictest `tsconfig`, `eslint --max-warnings 0`, CodeQL on every PR and every day                                                                  | `tsconfig.base.json`, CI, `.github/workflows/codeql.yml`                                                                                    |
+
+Rule 1 allows one exception, and so do we: the "forever" loops of a long-running service (the outbox relay's timer and the Kafka consumer loop) are expected to run until shutdown. What has to be bounded is the work _inside_ them: one batch, one message, a few retries.
+
+### Static analysis, part 1: the compiler
+
+`"strict": true` is where most projects stop. `tsconfig.base.json` adds the flags most projects skip, and each one closes a real hole:
+
+- **`noUncheckedIndexedAccess`**: `items[0]` has type `Item | undefined`, because the array might be empty. Without this flag, TypeScript pretends every index exists.
+- **`exactOptionalPropertyTypes`**: `causationId?: string` means "absent, or a string". You can't set it to `undefined` explicitly, which keeps `"causationId": null`-style surprises out of the JSON.
+- **`noPropertyAccessFromIndexSignature`**: you must write `env['DATABASE_URL']` rather than `env.DATABASE_URL`, which makes it visible that the key might be missing. That flag is why every environment read moved into `config.ts`.
+- **`noImplicitReturns`**, **`noFallthroughCasesInSwitch`**, **`noImplicitOverride`**, **`noUnusedLocals`**, **`noUnusedParameters`** and **`allowUnreachableCode: false`** turn small mistakes into compile errors.
+
+### Static analysis, part 2: type-aware linting
+
+A plain linter only sees the text. typescript-eslint's `strictTypeChecked` preset asks the TypeScript compiler for the type of every expression, so it can find bugs a plain linter can't:
+
+- **`no-floating-promises`**: calling an `async` function without `await` is an error. A forgotten `await` is the classic Node.js bug: the code runs out of order and the error goes nowhere.
+- **`strict-boolean-expressions`** (we also turn off its `allowNumber` and `allowString` options): `if (count)` and `if (name)` are rejected, because `0` and `''` are falsy too, so the check silently treats "zero" like "missing". You write what you mean: `if (count > 0)` or `if (name !== undefined)`.
+- **`switch-exhaustiveness-check`**: add a new event type to the union and every `switch` that forgot it fails the build.
+- **`no-unsafe-*`**: an `any` can't silently flow into typed code.
+
+`--max-warnings 0` is rule 10 in practice. A warning nobody fixes is noise that hides the next real one, so warnings fail CI like errors.
+
+### Writing your own lint rule
+
+ESLint has no "no recursion" rule, so [`tools/eslint-rules/no-recursion.mjs`](tools/eslint-rules/no-recursion.mjs) adds one. It's under 90 lines, and the idea behind it is worth knowing: ESLint parses each file into an **abstract syntax tree (AST)**, a tree of nodes like `FunctionDeclaration` and `CallExpression`, and calls your functions as it walks the tree. Our rule keeps a stack of the functions it is inside, with every name each one can call itself by, and when it meets a call to one of those names (`f()` inside `f`, or `this.m()` inside method `m`), it reports it.
+
+Paste a few lines into https://astexplorer.net (choose `@typescript-eslint/parser`) to see the tree ESLint sees.
+
+A lint rule is code, so it gets tests too. [`no-recursion.test.mjs`](tools/eslint-rules/no-recursion.test.mjs) feeds snippets to ESLint's `RuleTester` and checks the exact errors for each one, using Node's built-in test runner (`npm run test:tools`, which `npm run check` and CI also run). Writing those tests found a gap: in `const run = function loop(n) { ... loop(n - 1) ... }` the function has two names, the rule only knew it as `run`, and the recursive call slipped through. Now the rule records both.
+
+Honest limitation: it only catches _direct_ recursion. `a()` calling `b()` calling `a()` needs a whole-program call graph, so that's left to code review.
+
+### Assertions with `invariant()` (rule 5)
+
+```ts
+const result = await tx.query("UPDATE orders SET status = $2 WHERE id = $1 AND status = 'PENDING'", [
+  id,
+  next,
+]);
+invariant(result.rowCount === 1, `order ${id} was not PENDING`);
+```
+
+An assertion states something that must be true if the code is correct. If it's false, carrying on would write bad data, so we stop. `invariant()` throws an `InvariantError`: the transaction rolls back, and a consumer dead-letters the event with that message. The bug becomes visible, and nothing is half-written. Because `invariant` is declared as `asserts condition`, the compiler also narrows types after the call.
+
+Where you'll find them: every database write checks its row count, `withRetry()` checks its own arguments, `project()` checks the event belongs to the view it updates, and `charge()` checks the amount is a whole number of cents within limits.
+
+**Assertion vs validation:** _validation_ is for things that **can** happen (a client sends quantity 0, so we answer HTTP 400). An _assertion_ is for things that **can't** happen unless there's a bug. Don't use `invariant()` for user input.
+
+### Trust nothing at the boundary: parse, don't validate (rule 7)
+
+A Kafka message is untrusted bytes. It might come from another team's bug, an old event version, or someone typing into Redpanda Console. `parseEvent(raw: unknown): ShopEvent` checks every field (a known event type, version 1, a UUID id, an ISO date, matching order ids, the payload's shape, and each item's limits) and either returns a fully typed event or throws `InvalidEventError`. After that one call, the rest of the code can rely on the types. That's the idea behind the slogan "parse, don't validate": instead of checking data and then passing the same loose object around, convert it once into a type that can only hold valid data.
+
+The same idea guards the other two boundaries:
+
+- **HTTP bodies** go through class-validator DTOs with limits from `Limits` (at most 50 items, quantity 1 to 1,000, and so on), and a body over 64 kb is refused before it's even parsed.
+- **Environment variables** go through `loadMessagingSettings()`, which reads every setting once at startup and checks its range. A typo like `OUTBOX_BATCH_SIZE=10000` stops the service immediately with `config: OUTBOX_BATCH_SIZE must be in 1..1000, got 10000`, instead of misbehaving at 3 AM.
+
+### Three kinds of failure (an upgrade to Step 5)
+
+Step 5 retried every failure a few times, then dead-lettered it. A review spotted the gap: if Postgres restarted for 10 seconds, every _healthy_ event that arrived during the restart used up its retries and was dead-lettered, and those orders stayed stuck. `classifyFailure()` in `errors.ts` now sorts failures into three kinds:
+
+| Kind           | Examples                                                                    | What the consumer does                                                                                                                                                  |
+| -------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| permanent      | malformed JSON, unknown event type, a broken invariant                      | Dead-letter it at once. Retrying can't fix bad data.                                                                                                                    |
+| infrastructure | database unreachable (`ECONNREFUSED`, SQLSTATE `08xxx`), deadlock (`40P01`) | Retry with backoff, then throw `RedeliverLaterError`. Kafka doesn't commit the offset and delivers the message again later. **Never dead-lettered**: the event is fine. |
+| unknown        | probably a bug that only some inputs trigger                                | Retry with backoff, then dead-letter it, so one message can't block its partition forever.                                                                              |
+
+A kafkajs detail shaped this code: if your message handler throws a `TypeError`, `RangeError`, `ReferenceError` or `SyntaxError`, kafkajs treats it as a programming error and stops that consumer for good. The service would keep running and answering health checks while processing nothing. That's why `RedeliverLaterError` extends plain `Error`, and why handler bugs are caught, retried and dead-lettered instead of escaping to kafkajs.
+
+### What a code review found
+
+Before this step, every test passed. A careful review still found real bugs. Each one teaches something you can use in interviews:
+
+1. **Price tampering (security).** The client sent `unitPriceCents`, and nothing checked it, so anyone could buy a laptop for 1 cent. **Fix:** the inventory service owns the catalog, so it now stores prices (`migrations/002_add_prices.sql`) and rejects an order whose prices don't match, with a reason such as `price changed for BOOK: expected 4500, got 1`. **Lesson:** never trust a price, role or id that the client sends. Check it against the service that owns it.
+2. **A lost update in the read model.** You can't lock a row that doesn't exist yet. Two replicas projecting the first two events of a new order both found no row, both inserted one, and the second write overwrote the first. **Fix:** insert an empty placeholder row first (`ON CONFLICT DO NOTHING`), _then_ `SELECT ... FOR UPDATE`, which now always has a row to lock.
+3. **A deadlock in the compensation.** Reservations locked products in sku order, but the release gave stock back in the order items were listed. **Fix:** the release sorts by sku too. A locking rule only works if every code path follows it.
+4. **An integer overflow.** `/stats` cast the revenue sum to `int`, which overflows past about $21 million (2³¹ cents). **Fix:** cast to `bigint` and convert with `Number()`, which is exact up to 2⁵³.
+5. **A process crash.** When Postgres restarted, an idle pooled connection emitted an `'error'` event that nobody listened for, and Node.js kills the process on an unhandled `'error'` event. **Fix:** `pool.on('error', ...)` logs it, and the pool replaces the connection.
+6. **Shutdown in the wrong order.** Every component cleaned up in the same hook (`onModuleDestroy`), so the database pool could close while a consumer or a relay tick was still using it. **Fix:** Nest runs its shutdown hooks in phases, so each kind of cleanup gets the right phase. Consumers stop and the relay finishes its tick in `onModuleDestroy`, the producer disconnects in `beforeApplicationShutdown`, and the pool closes last in `onApplicationShutdown`.
+7. **A broken connection back in the pool.** If `ROLLBACK` itself failed (the connection was dead), its error replaced the real one, and the dead connection was handed back to the pool for the next request. **Fix:** keep the original error, and tell the pool to destroy that connection (`client.release(err)`).
+8. **A health check that lied.** On first start, the Postgres image runs its init scripts on a temporary server that only listens on a Unix socket. `pg_isready` over that socket said "healthy" before the databases existed. **Fix:** check over TCP (`-h 127.0.0.1`), which only the real server answers.
+9. **A race in the end-to-end test.** The query service reads three topics, and Kafka doesn't order messages across topics, so a view can say `CANCELLED` before `PaymentFailed` has been projected. The test waited for "status is no longer PENDING" and then checked the payment status. **Fix:** wait until _every_ field the test checks has arrived.
+10. **Migrations that ran on every start.** `migrate()` executed every `.sql` file each time a service started, relying on `IF NOT EXISTS`. That breaks as soon as a migration isn't safe to repeat, such as an `UPDATE` that sets prices. **Fix:** a `schema_migrations` table records which files have run, so each runs exactly once, inside one transaction, under a Postgres advisory lock so replicas starting together take turns. **Consequence:** a migration that has shipped is never edited. You add a new numbered file instead, which is why prices arrived as `002_add_prices.sql`.
+11. **A coverage gate that couldn't fail.** `jest.config.js` set coverage thresholds, but its file globs were written from the repository root (`services/*/src/**/*.ts`), while Jest matches them against each workspace's own `src/` folder. So Jest measured 0 of 0 lines, printed `Unknown%`, and let every threshold pass. **Fix:** globs relative to each workspace's `src/`, thresholds raised to what the tests really reach, and a CI step that fails if coverage ever measures 0 lines. **Lesson:** make every safety net fail once on purpose, to prove it can.
+
+### Tests and coverage
+
+- **One test run for the whole repo.** `jest.config.js` runs every workspace's tests together and **fails if coverage drops** below 90% of statements, lines and functions, or 85% of branches (today the tests cover about 97% of lines and 95% of branches). Coverage doesn't prove tests are good (a test with no assertions still "covers" code), but a threshold stops untested code from slipping in.
+- **Fakes instead of a real database.** Unit tests use a fake `Database` whose `transaction(fn)` just calls `fn(fakeClient)`, and a fake client that records every SQL statement it receives. Tests then check _which SQL would run, with which parameters_. They're fast and deterministic. The end-to-end test in CI covers the real Postgres and Kafka.
+- **See what's covered:** `npm run test:cov`, then open `coverage/lcov-report/index.html` in a browser. Red lines were never run by any test.
+
+### Git hooks and Conventional Commits
+
+`npm ci` runs the `prepare` script, which installs [husky](https://typicode.github.io/husky/)'s git hooks:
+
+- **pre-commit** runs `lint-staged`: ESLint (with `--fix`) and Prettier on the files you staged only, so it's fast.
+- **commit-msg** runs `commitlint`: the message must follow [Conventional Commits](https://www.conventionalcommits.org/), `type(optional scope): description`. For example, `feat(inventory-service): check prices against the catalog`, `fix(messaging): run each migration exactly once`, or `docs: add lesson 6`.
+
+Hooks are a convenience, not a guarantee (`git commit --no-verify` skips them), so CI runs the same checks again.
+
+Why insist on a message format? Because a tool can then work out the next version number by itself, following **semantic versioning** (MAJOR.MINOR.PATCH):
+
+| Commits since the last release                                 | Next version (from 1.4.2) |
+| -------------------------------------------------------------- | ------------------------- |
+| only `fix:`                                                    | 1.4.3 (patch)             |
+| at least one `feat:`                                           | 1.5.0 (minor)             |
+| a `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer | 2.0.0 (major)             |
+| only `docs:`, `test:`, `ci:`, `refactor:`, `chore:`            | no release                |
+
+### CI: what runs on every pull request
+
+`.github/workflows/ci.yml` runs these jobs side by side (only `e2e` waits for `quality` to pass first, because it's the slowest). A pull request should only be merged when all of them are green.
+
+| Job           | What it does                                                                                                | What it catches                                                                                                        |
+| ------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `quality`     | format check, build, lint, type-check, unit tests with coverage (table in the run summary), lint-rule tests | everything `npm run check` catches                                                                                     |
+| `pr-title`    | checks the PR title is a Conventional Commit                                                                | bad changelog entries: with squash merging, the PR title becomes the commit message on `main`                          |
+| `docker-lint` | hadolint on the `Dockerfile`                                                                                | Dockerfile mistakes, such as unpinned packages or running as root                                                      |
+| `secrets`     | gitleaks over the whole git history                                                                         | a password or API key committed by accident, even one deleted in a later commit                                        |
+| `audit`       | `npm audit --omit=dev --audit-level=high`                                                                   | known vulnerabilities in the dependencies that ship                                                                    |
+| `e2e`         | starts the whole system with Docker Compose and runs `tests/e2e/e2e.mjs`                                    | wiring bugs (topic names, serialisation, migrations, networking), the whole saga, price tampering and input validation |
+
+Three more workflows add security in depth:
+
+- **CodeQL** (`codeql.yml`): GitHub's semantic code analysis, with its security and quality queries, on every PR and **every day**. New vulnerability patterns are added all the time, so code that was clean yesterday can be flagged today. That's rule 10's "run analysers daily".
+- **Dependency review** (`dependency-review.yml`): when a PR adds or upgrades a dependency, it fails if that version has a known high-severity vulnerability.
+- **Dependabot** (`dependabot.yml`, not a workflow but a GitHub feature): every week it opens small PRs that update npm packages, GitHub Actions and the Docker base image. Small, frequent updates are much easier than one painful upgrade a year.
+
+Two habits in the workflow files are worth copying. Every workflow declares its `permissions:` explicitly, so the automatic `GITHUB_TOKEN` gets only what that workflow needs: CI can only read the code, and only the release workflow may push tags and images (the principle of least privilege). And CI's `concurrency` setting cancels an outdated run when you push again, so you don't wait for checks on code that no longer exists.
+
+### CD: from merge to a published release
+
+`.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please):
+
+1. You merge pull requests into `main`, each with a Conventional title.
+2. release-please keeps a **release PR** open (titled like `chore(main): release 0.1.0`). It bumps the version in `package.json` and writes the new `CHANGELOG.md` entries from the commit messages, and it updates itself after every merge.
+3. When you merge the release PR, release-please creates the tag `v0.1.0` and a GitHub Release.
+4. The `publish` job then builds an image for each of the four services and pushes it to GitHub Container Registry (for example `ghcr.io/mitraker/event-driven-ecommerce-order-service:0.1.0` and `:latest`).
+
+Why does publishing live in the same workflow, instead of a separate one that runs `on: release`? Anything created with the default `GITHUB_TOKEN` doesn't trigger other workflows. It's GitHub's protection against infinite loops, so a release made by release-please would never start a second workflow. (Also note the lowercase `mitraker`: image names on GHCR must be lowercase, so the workflow lowercases the owner's name.)
+
+Two things to know about the first release:
+
+- **The release PR gets no CI run.** release-please opens it with the same `GITHUB_TOKEN`, so the same loop protection applies. If branch protection requires checks, close and reopen the release PR (a reopen by a person does start the checks), or give release-please a personal access token through its `token` input.
+- **New images start private.** The first push to GHCR from a personal account creates a private package. To let anyone pull the images, open the package on your GitHub profile → Package settings → Change visibility.
+
+#### A supply-chain lesson: why there's no image scanner
+
+The obvious next step would be to scan each image for known vulnerabilities before publishing it, and the most popular tool for that is Trivy. But in March 2026, attackers took over Trivy's GitHub Action and **force-pushed 76 of its 77 version tags to malicious commits**. Every workflow that used `aquasecurity/trivy-action@<tag>` quietly ran code that stole the secrets available to it ([Aqua's advisory](https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know/)).
+
+The lesson is bigger than one tool: **every `uses:` line runs someone else's code with your workflow's permissions.** A version tag like `@v4` is just a movable pointer, while a full 40-character commit SHA can't be changed after the fact. So:
+
+1. Give each job the fewest permissions it needs (our workflows do this), so a compromised action can steal less.
+2. Prefer first-party actions (`actions/*`, `github/*`) and well-known publishers.
+3. For anything that handles secrets or publishes artifacts, pin to a commit SHA you have checked, and let Dependabot propose updates to the pin.
+
+Our workflows use version tags for readability, which is common practice. Pinning them all to SHAs is a good exercise below.
+
+### The files every professional repository has
+
+- **`README.md`**: what it is, how to run it, and badges that show the build is green.
+- **`LICENSE`** (MIT): without a license, nobody may legally reuse the code, even if the repo is public.
+- **`CONTRIBUTING.md`**: setup, the quality gates, the commit convention, and how to add a migration or a new event type.
+- **`SECURITY.md`**: how to report a vulnerability privately, never in a public issue.
+- **`CODE_OF_CONDUCT.md`**: the Contributor Covenant, the standard most open-source projects adopt.
+- **`CHANGELOG.md`**: what changed in each version, maintained by release-please.
+- **Issue forms and a PR template** (`.github/`): bug reports arrive with the details needed to reproduce them, and every PR answers "what, why, and how was it tested".
+- **`CODEOWNERS`**: who must review changes.
+- **`.editorconfig`, `.nvmrc`, `engines` in `package.json`**: everyone uses the same Node.js version and basic formatting.
+
+### GitHub settings that complete the setup
+
+Some protections live in the repository's settings on GitHub, not in files, so they have to be switched on once by hand:
+
+1. **Rules for `main`** (Settings → Rules → Rulesets, or Branches → Branch protection): require a pull request, require the CI checks to pass, and block force pushes and deletion.
+2. **Settings → Actions → General → Workflow permissions:** tick "Allow GitHub Actions to create and approve pull requests". release-please needs it to open the release PR.
+3. **Settings → General → Pull Requests:** allow squash merging with the PR title as the commit message, and tick "Automatically delete head branches".
+4. **Settings → Security** (called "Code security" or "Advanced Security" depending on your account): turn on private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
+
+### Try it yourself
+
+```bash
+npm ci             # installs dependencies and the git hooks
+npm run check      # format, build, lint, typecheck, unit tests + coverage, lint-rule tests
+```
+
+Exercises:
+
+1. Break a rule on purpose: add `while (true) {}` to any service and run `npm run lint`. Read the `JPL-2` message. Then stage the file and try to commit it: the pre-commit hook stops you. (Delete the loop again afterwards.)
+2. Check commit messages the way the commit-msg hook does: `echo "fixed stuff" | npx commitlint` is rejected, and `echo "fix: handle an empty basket" | npx commitlint` passes.
+3. Comment out one test in `services/inventory-service/src/reservation.spec.ts` and run `npm run test:cov`. Does coverage still pass? What does that tell you about coverage as a quality metric?
+4. Send a "poison" event: in Redpanda Console, copy a real `OrderCreated` message from the `orders` topic, change `"version": 1` to `"version": 2`, and produce it to `orders` again. You'll find it twice in `orders.dlq`, once from each service that reads `orders` (inventory and query: see the `dlq-consumer-group` header), both with `dlq-error: unsupported version 2`.
+5. Watch the infrastructure failure kind: with the full system running, place three orders and immediately run `docker compose stop postgres`. Wait 20 seconds, then `docker compose start postgres`. The logs show retries and redeliveries, the orders still finish, and no `.dlq` topic receives anything.
+6. Read `docs/CODING_STANDARD.md` and pick one rule that our tools can't fully check. How would you check it in a code review?
+7. Pin one third-party action to a commit SHA: on the action's GitHub page, open the release you want, copy the full commit SHA, and write `uses: owner/action@<sha> # v1.2.3`. The comment keeps it readable, and Dependabot updates both.
+8. Break the coverage gate the way it was once broken: in `jest.config.js`, change `'**/*.ts'` to `'services/*/src/**/*.ts'` and run `npm run test:cov`. Jest prints `Unknown%` and still passes. Then put it back.
+
+### Interview talking points
+
+- "Every loop, retry, batch, pool and request body has a bound, and the business limits live in one file."
+- "I separate permanent, infrastructure and unknown failures. A database outage never sends healthy events to the dead-letter queue."
+- "Assertions turn silent corruption into a loud, rolled-back error with a clear message."
+- "All the tests passed, and a review still found a price-tampering bug. Now every price the client sends is checked against the service that owns the catalog."
+- "Releases are automated from Conventional Commits, and every third-party tool in the pipeline is a supply-chain risk I can explain and limit."
+- "Our coverage gate once measured nothing and passed anyway. Now CI proves the gate measures real code, and I make every safety net fail once on purpose."
