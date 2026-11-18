@@ -9,11 +9,12 @@ useDefault = true
 
 [allowlist]
 description = "Throwaway local-dev Postgres credentials: user and password are both 'shop'"
-# Match against the whole line, and only lines that use exactly these dev credentials,
-# such as postgres://shop:shop@localhost:5432/orders in docker-compose.yml, the services'
-# package.json start scripts and the docs. Any other credential is still reported.
-regexTarget = "line"
+# Only a finding whose matched text is one of these dev credentials is dropped, such as
+# postgres://shop:shop@localhost:5432/orders in docker-compose.yml, the services' package.json
+# start scripts and the docs. "match" compares the regexes with what a rule matched, not with
+# the whole line ("line"), so a real secret next to these credentials is still reported.
+regexTarget = "match"
 regexes = [
   '''postgres(ql)?://shop:shop@''',
-  '''POSTGRES_PASSWORD:\s*shop\s*$''',
+  '''POSTGRES_PASSWORD:\s*shop\b''',
 ]
