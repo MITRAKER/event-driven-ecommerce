@@ -82,6 +82,18 @@ function parsePayload(eventType: EventType, payload: Fields, orderId: string): S
   }
 }
 
+/**
+ * The `eventType` of a decoded message, read without checking anything else, or undefined if
+ * it has none. A consumer uses it to skip types it doesn't handle before calling parseEvent(),
+ * which rejects types newer than this code: old consumers must ignore new events, not
+ * dead-letter them (the "tolerant reader" pattern).
+ */
+export function peekEventType(raw: unknown): string | undefined {
+  if (!isFields(raw)) return undefined;
+  const type = raw['eventType'];
+  return typeof type === 'string' ? type : undefined;
+}
+
 function readEventType(fields: Fields): EventType {
   const value = fields['eventType'];
   const known = EVENT_TYPES.find((type) => type === value);

@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { EventType, InvalidEventError, parseEvent, ShopEvent, Topic } from '@shop/contracts';
-import { Consumer, KafkaMessage, Partitioners, Producer } from 'kafkajs';
+import { EventType, InvalidEventError, parseEvent, peekEventType, ShopEvent, Topic } from '@shop/contracts';
+import { Consumer, EachMessagePayload, KafkaMessage, Partitioners, Producer } from 'kafkajs';
 import { PoolClient } from 'pg';
 import { MessagingConfig } from './config';
 import { Database } from './database';
@@ -11,18 +11,41 @@ import { withRetry } from './retry';
 
 export type ProcessResult = 'handled' | 'duplicate' | 'ignored';
 
+/** One message as kafkajs hands it to eachMessage (pause() left out: we don't use it). */
+export type Delivery = Pick<EachMessagePayload, 'topic' | 'partition' | 'message' | 'heartbeat'>;
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Decode a raw Kafka message. Anything that is not a valid event becomes an InvalidEventError. */
-export function decodeMessage(value: Buffer): ShopEvent {
+/**
+ * Carries an error from Kafka's heartbeat() past the failure handling in receive(), which hands
+ * it back to kafkajs unchanged. It usually means the group is rebalancing: kafkajs rejoins, and
+ * since this message's offset was never committed, the message is delivered again.
+ */
+class HeartbeatFailed extends Error {
+  override readonly name = 'HeartbeatFailed';
+
+  constructor(readonly original: unknown) {
+    super(`Kafka heartbeat failed: ${errorMessage(original)}`);
+  }
+}
+
+/**
+ * Decode a raw Kafka message into an event this consumer handles. Returns undefined for a
+ * message of another type, including a type newer than this code: skipping it before
+ * parseEvent() (which only knows today's types) is what lets producers add events without
+ * breaking old consumers. Anything else that is not a valid event becomes an InvalidEventError.
+ */
+export function decodeMessage(value: Buffer, handledTypes: ReadonlySet<string>): ShopEvent | undefined {
   let raw: unknown;
   try {
     raw = JSON.parse(value.toString('utf8'));
   } catch {
     throw new InvalidEventError('message is not valid JSON');
   }
+  const type = peekEventType(raw);
+  if (type !== undefined && !handledTypes.has(type)) return undefined;
   return parseEvent(raw);
 }
 
@@ -32,8 +55,9 @@ export function decodeMessage(value: Buffer): ShopEvent {
  *
  * Subclasses declare which event types they handle and implement handle() with a plain
  * switch (JPL rule 9: no tables of function pointers, so the call graph stays static).
- * Duplicates are skipped by claimEvent(); event types not in handledTypes are ignored,
- * which lets producers add new events without breaking old consumers.
+ * Duplicates are skipped by claimEvent(). Event types not in handledTypes are skipped
+ * without being parsed, even types this code has never heard of, which lets producers add
+ * new events without breaking old consumers (see decodeMessage()).
  *
  * @Injectable() here makes TypeScript record this constructor's parameter types. Nest reads
  * them through the prototype chain, so a subclass that needs nothing extra can skip writing
@@ -72,8 +96,8 @@ export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleD
     await this.consumer.connect();
     await this.consumer.subscribe({ topics: [...this.topics], fromBeginning: true });
     await this.consumer.run({
-      eachMessage: async ({ topic, partition, message }) => {
-        await this.receive(topic, partition, message);
+      eachMessage: async (delivery) => {
+        await this.receive(delivery);
       },
     });
   }
@@ -106,18 +130,25 @@ export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleD
    * - infrastructure (database down): throw, so kafkajs does not commit the offset and
    *   redelivers the message later. Healthy events are never dead-lettered just because
    *   a dependency had a bad minute.
+   * - Kafka refused a heartbeat between two tries (usually a rebalance): that error goes back
+   *   to kafkajs unchanged, so it can rejoin the group. The message comes back later too.
    * If even the DLQ send fails, that error also reaches kafkajs. A message is never dropped silently.
    */
-  async receive(topic: string, partition: number, message: KafkaMessage): Promise<void> {
+  async receive(delivery: Delivery): Promise<void> {
+    const { message } = delivery;
     if (message.value === null) return; // tombstone: nothing to process
-    const source = { topic, partition, message };
-    let event: ShopEvent;
+    let event: ShopEvent | undefined;
     try {
-      event = decodeMessage(message.value);
+      event = decodeMessage(message.value, this.handledTypes);
     } catch (err) {
-      await this.deadLetter(source, err);
+      await this.deadLetter(delivery, err);
       return;
     }
+    if (event === undefined) return; // a type this service doesn't handle
+    await this.processWithRetries(event, delivery);
+  }
+
+  private async processWithRetries(event: ShopEvent, delivery: Delivery): Promise<void> {
     try {
       await withRetry(async () => await this.process(event), {
         attempts: this.config.settings.consumerRetryAttempts,
@@ -126,14 +157,24 @@ export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleD
         onRetry: (n, err) => {
           this.logger.warn(`retry ${n} for ${event.eventType} ${event.eventId}: ${errorMessage(err)}`);
         },
+        // kafkajs only heartbeats between messages. Retrying one message can outlast the 30 s
+        // session timeout, and Kafka would then drop this consumer from the group mid-retry.
+        beforeWait: async () => {
+          try {
+            await delivery.heartbeat();
+          } catch (err) {
+            throw new HeartbeatFailed(err);
+          }
+        },
       });
     } catch (err) {
+      if (err instanceof HeartbeatFailed) throw err.original;
       if (classifyFailure(err) === 'infrastructure') {
         throw new RedeliverLaterError(
           `${event.eventType} ${event.eventId} will be redelivered: ${errorMessage(err)}`,
         );
       }
-      await this.deadLetter(source, err);
+      await this.deadLetter(delivery, err);
     }
   }
 

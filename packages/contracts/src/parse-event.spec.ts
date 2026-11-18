@@ -1,5 +1,5 @@
 import { createEvent, OrderCreated, PaymentFailed } from './events';
-import { InvalidEventError, parseEvent } from './parse-event';
+import { InvalidEventError, parseEvent, peekEventType } from './parse-event';
 
 const created = createEvent<OrderCreated>('OrderCreated', 'order-1', {
   orderId: 'order-1',
@@ -55,5 +55,16 @@ describe('parseEvent', () => {
   ])('rejects %s', (_label, raw, message) => {
     expect(() => parseEvent(raw)).toThrow(InvalidEventError);
     expect(() => parseEvent(raw)).toThrow(message);
+  });
+});
+
+describe('peekEventType', () => {
+  it('reads the type without validating the rest, even a type this code does not know', () => {
+    expect(peekEventType(wire())).toBe('OrderCreated');
+    expect(peekEventType({ eventType: 'OrderShipped', version: 9 })).toBe('OrderShipped');
+  });
+
+  it.each([['hello'], [null], [[]], [{}], [{ eventType: 42 }]])('finds no type in %j', (raw) => {
+    expect(peekEventType(raw)).toBeUndefined();
   });
 });

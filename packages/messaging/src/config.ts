@@ -50,6 +50,13 @@ export function readNumber(
   return value;
 }
 
+/**
+ * The longest allowed wait between two tries of one message. The consumer sends Kafka a heartbeat
+ * before each wait, and Kafka drops a consumer it hasn't heard from in 30 s (the session timeout),
+ * so one wait plus one try must fit well inside that.
+ */
+const MAX_RETRY_WAIT_MS = 10_000;
+
 export interface MessagingSettings {
   readonly serviceName: string;
   readonly port: number;
@@ -75,6 +82,14 @@ export function loadMessagingSettings(env: Env): MessagingSettings {
     .map((b) => b.trim())
     .filter((b) => b.length > 0);
   invariant(brokers.length > 0 && brokers.length <= 16, 'config: KAFKA_BROKERS needs 1..16 brokers');
+  const consumerRetryAttempts = readInt(env, 'CONSUMER_RETRY_ATTEMPTS', 5, [1, 10]);
+  const consumerRetryBaseMs = readInt(env, 'CONSUMER_RETRY_BASE_MS', 200, [1, 10_000]);
+  // The waits double: base, 2 x base, 4 x base... The last one is base x 2^(attempts - 2).
+  const longestWait = consumerRetryBaseMs * 2 ** (consumerRetryAttempts - 2);
+  invariant(
+    longestWait <= MAX_RETRY_WAIT_MS,
+    `config: CONSUMER_RETRY_BASE_MS and CONSUMER_RETRY_ATTEMPTS give a longest wait of ${longestWait} ms between retries, the limit is ${MAX_RETRY_WAIT_MS} ms`,
+  );
   return {
     serviceName: readString(env, 'SERVICE_NAME'),
     port: readInt(env, 'PORT', 3000, [1, 65_535]),
@@ -83,8 +98,8 @@ export function loadMessagingSettings(env: Env): MessagingSettings {
     kafkaBrokers: brokers,
     outboxPollMs: readInt(env, 'OUTBOX_POLL_MS', 500, [50, 60_000]),
     outboxBatchSize: readInt(env, 'OUTBOX_BATCH_SIZE', 100, [1, 1_000]),
-    consumerRetryAttempts: readInt(env, 'CONSUMER_RETRY_ATTEMPTS', 5, [1, 10]),
-    consumerRetryBaseMs: readInt(env, 'CONSUMER_RETRY_BASE_MS', 200, [1, 10_000]),
+    consumerRetryAttempts,
+    consumerRetryBaseMs,
   };
 }
 

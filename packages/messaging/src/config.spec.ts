@@ -34,6 +34,14 @@ describe('config', () => {
     expect(() => loadMessagingSettings({ ...base, KAFKA_BROKERS: ' , ' })).toThrow('KAFKA_BROKERS');
   });
 
+  it('keeps every wait between retries short enough for a Kafka heartbeat to follow in time', () => {
+    const settings = (attempts: string, baseMs: string): unknown =>
+      loadMessagingSettings({ ...base, CONSUMER_RETRY_ATTEMPTS: attempts, CONSUMER_RETRY_BASE_MS: baseMs });
+    expect(settings('10', '39')).toMatchObject({ consumerRetryAttempts: 10 }); // longest wait 9,984 ms
+    expect(settings('1', '10000')).toMatchObject({ consumerRetryAttempts: 1 }); // one try, no wait
+    expect(() => settings('10', '200')).toThrow('longest wait of 51200 ms');
+  });
+
   it('readString uses the fallback only when the variable is unset', () => {
     expect(readString({}, 'X', 'fallback')).toBe('fallback');
     expect(readString({ X: 'set' }, 'X', 'fallback')).toBe('set');
