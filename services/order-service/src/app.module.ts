@@ -1,12 +1,11 @@
 import { Module } from '@nestjs/common';
-import { Database } from './infra/database';
-import { KafkaProducer } from './infra/kafka';
+import { Database, KafkaProducer, OutboxRelay } from '@shop/messaging';
 import { OrdersController } from './orders/orders.controller';
 import { OrdersService } from './orders/orders.service';
-import { OutboxRelay } from './outbox/outbox.relay';
+import { OrderSagaConsumer } from './saga/order-saga.consumer';
 
 @Module({
   controllers: [OrdersController],
-  providers: [Database, KafkaProducer, OrdersService, OutboxRelay],
+  providers: [Database, KafkaProducer, OutboxRelay, OrdersService, OrderSagaConsumer],
 })
 export class AppModule {}

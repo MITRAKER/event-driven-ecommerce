@@ -1,8 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { createEvent, OrderCreated, Topics } from '@shop/contracts';
-import { Database } from '../infra/database';
-import { addToOutbox } from '../outbox/outbox.repository';
+import { addToOutbox, Database } from '@shop/messaging';
 import { CreateOrderDto } from './create-order.dto';
 
 @Injectable()

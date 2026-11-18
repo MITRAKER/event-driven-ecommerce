@@ -1,10 +1,17 @@
 {
   "name": "event-driven-ecommerce",
   "private": true,
-  "workspaces": ["packages/*", "services/*"],
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "test": "npm test --workspaces --if-present"
+    "test": "npm test --workspaces --if-present",
+    "start:order": "npm start -w @shop/order-service",
+    "start:inventory": "npm start -w @shop/inventory-service",
+    "start:payment": "npm start -w @shop/payment-service",
+    "start:query": "npm start -w @shop/order-query-service"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
