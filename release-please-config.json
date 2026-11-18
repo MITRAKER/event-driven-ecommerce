@@ -7,16 +7,20 @@
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },
     { "type": "perf", "section": "Performance" },
-    { "type": "refactor", "section": "Refactoring" },
-    { "type": "docs", "section": "Documentation" },
+    { "type": "revert", "section": "Reverts" },
     { "type": "build", "section": "Build and Dependencies" },
-    { "type": "ci", "section": "CI/CD" },
-    { "type": "test", "section": "Tests" }
+    { "type": "refactor", "section": "Refactoring", "hidden": true },
+    { "type": "docs", "section": "Documentation", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "ci", "section": "CI/CD", "hidden": true },
+    { "type": "style", "section": "Style", "hidden": true },
+    { "type": "chore", "section": "Miscellaneous", "hidden": true }
   ],
   "packages": {
     ".": {
       "package-name": "event-driven-ecommerce",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "initial-version": "0.1.0"
     }
   }
 }

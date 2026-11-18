@@ -2,9 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
-From version 0.1.0 on, this file is maintained by [release-please](https://github.com/googleapis/release-please). It writes each release's entries from the [Conventional Commits](https://www.conventionalcommits.org/) merged since the previous release and inserts the new version at the top, just below this note. Please don't edit those sections by hand: fix the commit or pull request title instead. The project follows [semantic versioning](https://semver.org/).
+From version 0.1.0 on, this file is maintained by [release-please](https://github.com/googleapis/release-please). It writes each release's entries from the [Conventional Commits](https://www.conventionalcommits.org/) merged since the previous release and inserts the new version just below this note, above the newest version heading. Please don't edit those sections by hand: fix the commit or pull request title instead. The project follows [semantic versioning](https://semver.org/).
 
-## Before 0.1.0
+<!-- release-please inserts each new version above the first heading that starts with a version number, so keep "0.0.0" at the start of the heading below. -->
+
+## 0.0.0 (before the first release)
 
 The project was built in six steps before the first release. Each step has a lesson in [`LEARNING.md`](LEARNING.md).
 
