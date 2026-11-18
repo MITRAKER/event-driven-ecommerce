@@ -10,8 +10,8 @@ The code of conduct is enforced by the repository owner, [@MITRAKER](https://git
 
 To report unacceptable behaviour:
 
-- if it happened in a comment, issue or pull request, use GitHub's **Report content** option (the `...` menu on the comment), or
-- contact [@MITRAKER](https://github.com/MITRAKER) through GitHub.
+- if it happened in a comment, issue or pull request, use GitHub's **Report content** option (the `...` menu on the comment) and choose **Report to repository admins**. Only the repository owner sees that report. (**Report abuse** in the same menu goes to GitHub's own staff instead.)
+- for anything else, mention [@MITRAKER](https://github.com/MITRAKER) in a short issue that only asks to be contacted, without details, and a private way to talk will be arranged.
 
 All reports will be reviewed and handled promptly and fairly, and the privacy of the person reporting will be respected. The repository owner follows the Contributor Covenant's enforcement guidelines (correction, warning, temporary ban, permanent ban) when deciding on consequences.
 

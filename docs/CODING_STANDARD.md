@@ -27,7 +27,7 @@ Where to find the machinery:
 | HTTP body limit                     | `services/*/src/main.ts` (`app.useBodyParser('json', { limit: '64kb' })`)                                                   |
 | Everything at once, like CI         | `npm run check` (see [`CONTRIBUTING.md`](../CONTRIBUTING.md))                                                               |
 
-Every lint message produced by our own configuration starts with `JPL-n:`, so when the linter stops you, the message tells you which rule below to read.
+When the linter stops you, the message points to the rule below that explains why. Messages from our own checks (the banned-syntax list and the no-recursion rule in [`eslint.config.mjs`](../eslint.config.mjs)) start with `JPL-n:`. The other rules print ESLint's usual message with the rule's name, such as `complexity` or `max-depth`: each rule name is listed under the JPL rule it enforces.
 
 ---
 
@@ -78,7 +78,7 @@ Both run until shutdown, and both stop cleanly in `onModuleDestroy`. What must b
 - ESLint `no-constant-condition` with `checkLoops: 'all'` (no `for (; true; )`) and `no-unmodified-loop-condition` (a loop whose condition variables never change).
 - Runtime bounds, each checked when the service starts or the function is called:
   - `withRetry()` in [`retry.ts`](../packages/messaging/src/retry.ts) asserts `1 <= attempts <= 10` (`MAX_ATTEMPTS`) with `invariant()` before it loops.
-  - `CONSUMER_RETRY_ATTEMPTS` must be in 1..10 and `OUTBOX_BATCH_SIZE` in 1..1000 (`loadMessagingSettings()` in [`config.ts`](../packages/messaging/src/config.ts)).
+  - `CONSUMER_RETRY_ATTEMPTS` must be in 1..10 and `OUTBOX_BATCH_SIZE` in 1..1000, and the longest wait between two retries must be at most 10 seconds, so the consumer's heartbeat reaches Kafka within its 30-second session timeout (`loadMessagingSettings()` in [`config.ts`](../packages/messaging/src/config.ts)).
   - The relay's `SELECT ... LIMIT $1`, followed by `invariant(rows.length <= batchSize, ...)` in [`outbox.relay.ts`](../packages/messaging/src/outbox.relay.ts).
   - kafkajs' own retries are configured with explicit limits in [`kafka.ts`](../packages/messaging/src/kafka.ts) (`retries: 8` with a `maxRetryTime` while connecting, `retries: 5` for producers).
 
@@ -170,14 +170,14 @@ Typical assertions in this repo: every `UPDATE` or `INSERT` checks its `rowCount
 - **No module-level `let`**: mutable state lives in a class instance that Nest creates and destroys, not in a global.
 - No shadowing: an inner variable may not reuse an outer name.
 - Class fields that are never reassigned are `readonly`; parameters are never reassigned.
-- Configuration is read **once**, in `config.ts`, and injected (`MessagingConfig`). Classes do not read `process.env` themselves.
+- Configuration is read **once**, at startup, by a settings loader that checks every value: `loadMessagingSettings()` in `config.ts` (injected as `MessagingConfig`) and `loadPaymentSettings()` in the payment service. Other classes do not read `process.env`. The one exception is `PROJECTION_GROUP_ID`, which `OrderProjector`'s constructor reads with the same checked `readString()`.
 
 **Enforced by.**
 
 - ESLint `no-var`, `prefer-const`, `block-scoped-var`, `no-param-reassign`, `@typescript-eslint/no-shadow` and `@typescript-eslint/prefer-readonly`.
 - ESLint `no-restricted-syntax` with the selector `Program > VariableDeclaration[kind="let"]` (no `let` at module level).
 - Compiler flags `noUnusedLocals` and `noUnusedParameters` (a declaration nobody uses is scope wasted).
-- `noPropertyAccessFromIndexSignature` forces `env['DATABASE_URL']` instead of `env.DATABASE_URL`, which made scattered environment reads awkward enough that they all moved into `config.ts`.
+- `noPropertyAccessFromIndexSignature` forces `env['DATABASE_URL']` instead of `env.DATABASE_URL`, which made scattered environment reads awkward enough that they all moved into the settings loaders.
 
 **Not checked by tools.** A module-level `const` can still hold a mutable object (`const cache = new Map()`), which is global state in disguise. In review, treat a module-level `Map`, `Set`, array or object that is changed after start-up like a module-level `let`.
 
@@ -191,9 +191,9 @@ Typical assertions in this repo: every `UPDATE` or `INSERT` checks its `rowCount
 
 **Our adaptation.** In Node.js the most dangerous ignored return value is a **promise**: an `async` call without `await` runs out of order, and its error goes nowhere. For parameters, we check untrusted data **once, at the boundary**, and turn it into a type that can only hold valid data ("parse, don't validate"). There are three boundaries:
 
-- **Kafka messages**: `parseEvent(raw: unknown): ShopEvent` in [`parse-event.ts`](../packages/contracts/src/parse-event.ts) checks every field (known event type, version, UUID, ISO date, matching order ids, payload shape, `Limits` on items) and returns a typed event or throws `InvalidEventError`. The consumer base class ([`event.consumer.ts`](../packages/messaging/src/event.consumer.ts)) calls it on every message before any handler sees it, and dead-letters what fails.
+- **Kafka messages**: `parseEvent(raw: unknown): ShopEvent` in [`parse-event.ts`](../packages/contracts/src/parse-event.ts) checks every field (known event type, version, UUID, ISO date, matching order ids, payload shape, `Limits` on items) and returns a typed event or throws `InvalidEventError`. The consumer base class ([`event.consumer.ts`](../packages/messaging/src/event.consumer.ts)) calls it on every message of a type it handles, before any handler sees it, and dead-letters what fails. A message of another type is skipped unparsed (`peekEventType()`), even a type newer than the code, so adding an event never breaks an old consumer.
 - **HTTP bodies**: class-validator DTOs (for example `services/order-service/src/orders/create-order.dto.ts`) use the bounds from `Limits`, and `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })` turns an unknown field into a 400.
-- **Environment variables**: `loadMessagingSettings()` in [`config.ts`](../packages/messaging/src/config.ts) reads every setting once at startup and checks its type and range, so a typo stops the service at once with a message like `config: OUTBOX_BATCH_SIZE must be in 1..1000, got 10000`.
+- **Environment variables**: the settings loaders (`loadMessagingSettings()` in [`config.ts`](../packages/messaging/src/config.ts), and `loadPaymentSettings()`) read every setting once at startup and check its format and range, so a typo stops the service at once with a message like `config: OUTBOX_BATCH_SIZE must be in 1..1000, got 10000`. A number must be written as a plain number: `Number()` alone would read a blank `DECLINE_ABOVE_CENTS=` as 0.
 
 Inside the system, the important return values are database results: every write checks `rowCount` with `invariant()`.
 
@@ -202,7 +202,7 @@ Inside the system, the important return values are database results: every write
 - ESLint `@typescript-eslint/no-floating-promises` (a promise must be awaited, returned, or explicitly discarded with `void`) and `@typescript-eslint/no-misused-promises` (no `async` function where a plain callback is expected).
 - ESLint `@typescript-eslint/return-await` (`always`), so a rejected promise is caught by the surrounding `try` and appears in the stack trace.
 - ESLint `@typescript-eslint/strict-boolean-expressions`: `if (count)` is rejected for numbers and nullable strings, because `0` and `''` are falsy. Write the comparison you mean.
-- ESLint `@typescript-eslint/switch-exhaustiveness-check`: add an event type to the `ShopEvent` union, and every `switch` that forgets it fails the build.
+- ESLint `@typescript-eslint/switch-exhaustiveness-check` and `assertNever()`: add an event type to the `ShopEvent` union, and every `switch` that forgets it fails the build, if the `switch` has no `default` (the lint rule; we set `considerDefaultExhaustiveForUnions`, so it skips a `switch` that has one) or its `default` calls `assertNever()` (the compiler, because `assertNever` only accepts `never`). A `default` that throws anything else is checked by neither.
 - ESLint `@typescript-eslint/explicit-function-return-type` and `@typescript-eslint/no-unused-vars`.
 - Compiler flags `strict`, `noImplicitReturns`, `noFallthroughCasesInSwitch` and `noUncheckedIndexedAccess` (`items[0]` has type `Item | undefined`, so you must handle the missing case).
 - Runtime: `parseEvent()`, the DTOs with `ValidationPipe`, and `loadMessagingSettings()`.
@@ -241,7 +241,7 @@ Inside the system, the important return values are database results: every write
 
 - **No `any`.** An `any` switches the type checker off for everything it touches. Untrusted data is `unknown` until it is parsed (rule 7).
 - **No non-null assertions** (`value!`). They are a promise to the compiler that nobody checks. Handle `undefined` instead, or state the fact with `invariant()`.
-- **No function tables.** Event handlers are not looked up in an object like `{ OrderCreated: onCreated, ... }`. Each consumer lists the types it accepts in `handledTypes` and dispatches with a plain `switch (event.eventType)` in `handle()`, so the call graph is static and `switch-exhaustiveness-check` covers it. See `EventConsumer` in [`event.consumer.ts`](../packages/messaging/src/event.consumer.ts) and its subclasses in `services/*/src`.
+- **No function tables.** Event handlers are not looked up in an object like `{ OrderCreated: onCreated, ... }`. Each consumer lists the types it accepts in `handledTypes` and dispatches with a plain `switch (event.eventType)` in `handle()`, so the call graph is static. The read model handles every type, so its `switch` ends in `assertNever()` and the compiler checks it. The other consumers handle a few types each, so theirs end in a `default` that throws `InvariantError`, which no tool checks: their tests cover each type in `handledTypes`. See `EventConsumer` in [`event.consumer.ts`](../packages/messaging/src/event.consumer.ts) and its subclasses in `services/*/src`.
 - **No arrow-function class fields** (`handle = async (e) => { ... }`). A field holding a function can be replaced at runtime; a method is part of the class's fixed shape and is visible to the recursion check.
 
 Callbacks are still allowed where the language and libraries require them (array methods, `withRetry(fn)`, kafkajs' `eachMessage`, Nest's `useFactory`). They are written inline at the call site, so a reader can see exactly what will run.
@@ -309,7 +309,7 @@ The Power of Ten is about the code itself. These gates surround it:
 | **gitleaks**           | Secrets (passwords, API keys) anywhere in the git history                                                                                    | CI `secrets` job                                                               |
 | **hadolint**           | Dockerfile mistakes, such as unpinned packages or running as root                                                                            | CI `docker-lint` job                                                           |
 | **commitlint**         | Commit messages follow Conventional Commits ([`commitlint.config.mjs`](../commitlint.config.mjs))                                            | husky `commit-msg` hook                                                        |
-| **Semantic PR titles** | The pull request title is a Conventional Commit, because squash merging turns it into the commit on `main`                                   | CI `pr-title` job                                                              |
+| **Semantic PR titles** | The pull request title is a Conventional Commit, because squash merging turns it into the commit on `main`                                   | `.github/workflows/pr-title.yml`, which runs again when the title is edited    |
 
 `npm run check` runs the first three gates and the unit tests locally, in the same order as CI. [`CONTRIBUTING.md`](../CONTRIBUTING.md) explains each script.
 

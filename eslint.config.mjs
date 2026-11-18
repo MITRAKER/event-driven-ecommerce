@@ -32,7 +32,7 @@ const JPL_BANNED_SYNTAX = [
     message: 'JPL-9: no function-valued class fields; write a method so the call graph stays static.',
   },
   { selector: 'ImportExpression', message: 'JPL-8: no dynamic import().' },
-  { selector: 'TSEnumDeclaration', message: 'Use a union of string literals instead of enum.' },
+  { selector: 'TSEnumDeclaration', message: 'JPL-8: use a union of string literals instead of enum.' },
 ];
 
 const JPL_RULES = {

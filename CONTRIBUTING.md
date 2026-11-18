@@ -60,7 +60,7 @@ This is an npm workspaces monorepo: run a script in one workspace with `-w`, for
 
 ## Quality gates
 
-One command runs every check that CI runs, except the Docker-based ones:
+One command runs the same checks as CI's `quality` job:
 
 ```bash
 npm run check
@@ -108,10 +108,11 @@ The types we use:
 | ---------- | --------------------------------------------------- | ----------------------------------------------------------- |
 | `feat`     | A new feature                                       | `feat(order-service): let customers cancel a pending order` |
 | `fix`      | A bug fix                                           | `fix(messaging): run each migration exactly once`           |
+| `perf`     | A change that makes the code faster                 | `perf(order-query-service): index orders by customer`       |
 | `docs`     | Documentation only                                  | `docs: explain the outbox relay in lesson 2`                |
 | `refactor` | A code change that neither fixes a bug nor adds one | `refactor(inventory-service): extract decideReservation()`  |
 | `test`     | Adding or fixing tests                              | `test(payment-service): cover the decline threshold`        |
-| `build`    | Build system, dependencies, Dockerfile              | `build: upgrade NestJS to 10.4`                             |
+| `build`    | Build system, dependencies, Dockerfile              | `build(deps): bump pg from 8.13.1 to 8.14.0`                |
 | `ci`       | GitHub Actions workflows                            | `ci: run CodeQL every day`                                  |
 | `chore`    | Anything else that doesn't touch the shipped code   | `chore: tidy .gitignore`                                    |
 
@@ -119,7 +120,7 @@ The **scope** is optional. Good scopes are the workspace or area you changed: `c
 
 A `!` after the type (`feat(contracts)!: ...`) or a `BREAKING CHANGE:` footer marks a breaking change.
 
-Why a fixed format? Because the release tool reads it: `fix` means a patch release, `feat` a minor release, and a breaking change a major release. It also writes the changelog from these messages, so write the description for a reader of the changelog.
+Why a fixed format? Because the release tool reads it: `fix`, `perf` and `build` mean a patch release, `feat` a minor release, and a breaking change a major release (until 1.0.0, a minor one). `docs`, `refactor`, `test`, `ci`, `style` and `chore` don't make a release on their own, and stay out of the changelog. The tool writes the changelog from these messages, so write the description for a reader of the changelog.
 
 ## Git hooks
 
@@ -150,7 +151,7 @@ Releases are automated with [release-please](https://github.com/googleapis/relea
 
 ## Adding a migration
 
-Each service keeps its schema in `services/<service>/migrations/` as numbered SQL files (`001_init.sql`, `002_add_prices.sql`, ...). On startup, `Database.migrate()` in `packages/messaging/src/database.ts` applies every file that hasn't run yet, in name order, each in a transaction, and records it in the `schema_migrations` table. A Postgres advisory lock makes replicas that start at the same time take turns.
+Each service keeps its schema in `services/<service>/migrations/` as numbered SQL files (`001_init.sql`, `002_add_prices.sql`, ...). On startup, `Database.migrate()` in `packages/messaging/src/database.ts` applies every file that hasn't run yet, in name order, all in one transaction (if one fails, none of that start's migrations is applied), and records each one in the `schema_migrations` table. A Postgres advisory lock makes replicas that start at the same time take turns.
 
 So **each migration runs exactly once per database**, which gives you two rules:
 
@@ -166,7 +167,7 @@ Events are the contract between services, so a new event touches several places.
 1. **Define it** in `packages/contracts/src/events.ts`: add `export type OrderShipped = EventEnvelope<'OrderShipped', { orderId: string; ... }>`, add it to the `ShopEvent` union and to `EVENT_TYPES`. Choose the topic of the service that owns the fact (one topic per producing service).
 2. **Parse it** in `packages/contracts/src/parse-event.ts`: add a `case` to `parsePayload()` that checks every payload field, with bounds from `Limits`. The `switch-exhaustiveness-check` lint rule tells you if you forget. Add tests to `parse-event.spec.ts`, including invalid payloads.
 3. **Publish it** from the producing service with `createEvent()`, inside the same database transaction as the state change, through the outbox. Never send to Kafka directly from business code.
-4. **Consume it** in each service that needs it: add the type to the consumer's `handledTypes` and a `case` to the `switch` in its `handle()` (no handler tables, see JPL rule 9). Consumers that don't list it simply ignore it, which is what lets you add events without breaking old services. Update the read model's `project()` in `order-query-service` if the view should show it.
+4. **Consume it** in each service that needs it: add the type to the consumer's `handledTypes` and a `case` to the `switch` in its `handle()` (no handler tables, see JPL rule 9). Three switches name every event type and end in `assertNever()`, so the build fails until you decide what the new event means there: `fromPending()` in `services/order-service/src/saga/order-state.ts` (does it move a pending order?), and in `order-query-service` (which consumes every type) `applyEvent()` in `projection.ts` and `OrderProjector.handle()`. Services that don't list the new type skip it without parsing it, even old versions of them that have never heard of it, which is what lets you add events without breaking old services. Deploy the services that consume it before the one that produces it, or they skip its first messages.
 5. **Document it** in `contracts/events/README.md` (the event catalog) and, if it changes the flow, in `README.md` and `LEARNING.md`. Extend `tests/e2e/e2e.mjs` if it changes behaviour a user can see.
 
 **Changing an existing event (versioning).** Consumers may still be reading old messages from Kafka, and other services may be deployed later than yours. So:

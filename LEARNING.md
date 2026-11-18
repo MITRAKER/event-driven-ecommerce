@@ -227,7 +227,7 @@ Exercises:
 - `GET /customers/:customerId/orders`: a "my orders" page
 - `GET /stats`: order count and revenue by status (a mini admin dashboard)
 
-It has no Kafka producer and no outbox, and it never writes anywhere except its own database.
+It has no outbox and publishes no business events. The only thing it ever writes outside its own database is a message it can't process, which goes to that topic's dead-letter topic (`orders.dlq`, for example; Step 5).
 
 ### What CQRS means
 
@@ -252,7 +252,7 @@ Kafka guarantees order **only within one partition**. Our events for one order a
 - a final status is never overwritten by an earlier-stage event
 - the timeline is sorted by `occurredAt`, not by arrival (with the event type as a tie-break, so two events with the same timestamp always come out in the same order)
 
-The test `gives the same result no matter what order events arrive in` replays events backwards and checks the result is identical. It caught a real bug while I was writing it: a reservation arriving _after_ the cancel showed as `RESERVED` instead of `RELEASED`.
+The test `gives the same view whatever the arrival order` replays the same events in four different orders (reversed, cancel first, reservation last, interleaved) and checks that every result is identical. It caught a real bug while I was writing it: a reservation arriving _after_ the cancel showed as `RESERVED` instead of `RELEASED`.
 
 ### Rebuilding a projection, a CQRS superpower
 
@@ -369,7 +369,7 @@ packages/messaging/src/
 CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, CHANGELOG.md, issue forms, PR template, CODEOWNERS
 ```
 
-One command runs every check that CI runs (except the Docker ones): `npm run check`. It checks formatting, builds, lints, type-checks, runs the unit tests with coverage, and tests our own lint rule.
+One command runs what CI's `quality` job runs: `npm run check`. It checks formatting, builds, lints, type-checks, runs the unit tests with coverage, and tests our own lint rule. The security scans, the PR title check and the end-to-end test run only in CI (`npm audit --omit=dev` and `npm run test:e2e` work locally too).
 
 ### Why use a space-flight coding standard for a web shop?
 
@@ -404,7 +404,7 @@ Rule 1 allows one exception, and so do we: the "forever" loops of a long-running
 
 - **`noUncheckedIndexedAccess`**: `items[0]` has type `Item | undefined`, because the array might be empty. Without this flag, TypeScript pretends every index exists.
 - **`exactOptionalPropertyTypes`**: `causationId?: string` means "absent, or a string". You can't set it to `undefined` explicitly, which keeps `"causationId": null`-style surprises out of the JSON.
-- **`noPropertyAccessFromIndexSignature`**: you must write `env['DATABASE_URL']` rather than `env.DATABASE_URL`, which makes it visible that the key might be missing. That flag is why every environment read moved into `config.ts`.
+- **`noPropertyAccessFromIndexSignature`**: you must write `env['DATABASE_URL']` rather than `env.DATABASE_URL`, which makes it visible that the key might be missing. That flag is why the environment is read only by the settings loaders, such as `loadMessagingSettings()` in `config.ts`.
 - **`noImplicitReturns`**, **`noFallthroughCasesInSwitch`**, **`noImplicitOverride`**, **`noUnusedLocals`**, **`noUnusedParameters`** and **`allowUnreachableCode: false`** turn small mistakes into compile errors.
 
 ### Static analysis, part 2: type-aware linting
@@ -413,7 +413,7 @@ A plain linter only sees the text. typescript-eslint's `strictTypeChecked` prese
 
 - **`no-floating-promises`**: calling an `async` function without `await` is an error. A forgotten `await` is the classic Node.js bug: the code runs out of order and the error goes nowhere.
 - **`strict-boolean-expressions`** (we also turn off its `allowNumber` and `allowString` options): `if (count)` and `if (name)` are rejected, because `0` and `''` are falsy too, so the check silently treats "zero" like "missing". You write what you mean: `if (count > 0)` or `if (name !== undefined)`.
-- **`switch-exhaustiveness-check`**: add a new event type to the union and every `switch` that forgot it fails the build.
+- **`switch-exhaustiveness-check`** and **`assertNever()`**: add a new event type to the union, and every `switch` that forgot it fails the build, as long as the `switch` has no `default` (the lint rule checks it) or its `default` calls `assertNever(event)` (the compiler checks it: `assertNever` only accepts `never`, the type of a value that can't exist). A `default` that throws anything else turns both checks off. The consumers' `handle()` methods do that on purpose, because each one handles only a few types.
 - **`no-unsafe-*`**: an `any` can't silently flow into typed code.
 
 `--max-warnings 0` is rule 10 in practice. A warning nobody fixes is noise that hides the next real one, so warnings fail CI like errors.
@@ -448,22 +448,26 @@ Where you'll find them: every database write checks its row count, `withRetry()`
 
 A Kafka message is untrusted bytes. It might come from another team's bug, an old event version, or someone typing into Redpanda Console. `parseEvent(raw: unknown): ShopEvent` checks every field (a known event type, version 1, a UUID id, an ISO date, matching order ids, the payload's shape, and each item's limits) and either returns a fully typed event or throws `InvalidEventError`. After that one call, the rest of the code can rely on the types. That's the idea behind the slogan "parse, don't validate": instead of checking data and then passing the same loose object around, convert it once into a type that can only hold valid data.
 
+One exception keeps old services working when new events appear. `parseEvent()` only knows today's event types, so on its own it would reject an `OrderShipped` added next year, and every old consumer would dead-letter it. So the consumer first reads just the `eventType` (`peekEventType()`), skips a type it doesn't handle without parsing it, and only parses the types it does handle. That's the **tolerant reader** pattern: be strict about what you use, and ignore what you don't.
+
 The same idea guards the other two boundaries:
 
 - **HTTP bodies** go through class-validator DTOs with limits from `Limits` (at most 50 items, quantity 1 to 1,000, and so on), and a body over 64 kb is refused before it's even parsed.
-- **Environment variables** go through `loadMessagingSettings()`, which reads every setting once at startup and checks its range. A typo like `OUTBOX_BATCH_SIZE=10000` stops the service immediately with `config: OUTBOX_BATCH_SIZE must be in 1..1000, got 10000`, instead of misbehaving at 3 AM.
+- **Environment variables** go through a settings loader such as `loadMessagingSettings()`, which reads every setting once at startup and checks its format and range. A typo like `OUTBOX_BATCH_SIZE=10000` stops the service immediately with `config: OUTBOX_BATCH_SIZE must be in 1..1000, got 10000`, instead of misbehaving at 3 AM.
 
 ### Three kinds of failure (an upgrade to Step 5)
 
 Step 5 retried every failure a few times, then dead-lettered it. A review spotted the gap: if Postgres restarted for 10 seconds, every _healthy_ event that arrived during the restart used up its retries and was dead-lettered, and those orders stayed stuck. `classifyFailure()` in `errors.ts` now sorts failures into three kinds:
 
-| Kind           | Examples                                                                    | What the consumer does                                                                                                                                                  |
-| -------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| permanent      | malformed JSON, unknown event type, a broken invariant                      | Dead-letter it at once. Retrying can't fix bad data.                                                                                                                    |
-| infrastructure | database unreachable (`ECONNREFUSED`, SQLSTATE `08xxx`), deadlock (`40P01`) | Retry with backoff, then throw `RedeliverLaterError`. Kafka doesn't commit the offset and delivers the message again later. **Never dead-lettered**: the event is fine. |
-| unknown        | probably a bug that only some inputs trigger                                | Retry with backoff, then dead-letter it, so one message can't block its partition forever.                                                                              |
+| Kind           | Examples                                                                                             | What the consumer does                                                                                                                                                  |
+| -------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| permanent      | malformed JSON, an event version this code can't read, a broken invariant                            | Dead-letter it at once. Retrying can't fix bad data.                                                                                                                    |
+| infrastructure | database unreachable (`ECONNREFUSED`, SQLSTATE `08xxx`), deadlock (`40P01`), query timeout (`57014`) | Retry with backoff, then throw `RedeliverLaterError`. Kafka doesn't commit the offset and delivers the message again later. **Never dead-lettered**: the event is fine. |
+| unknown        | probably a bug that only some inputs trigger                                                         | Retry with backoff, then dead-letter it, so one message can't block its partition forever.                                                                              |
 
 A kafkajs detail shaped this code: if your message handler throws a `TypeError`, `RangeError`, `ReferenceError` or `SyntaxError`, kafkajs treats it as a programming error and stops that consumer for good. The service would keep running and answering health checks while processing nothing. That's why `RedeliverLaterError` extends plain `Error`, and why handler bugs are caught, retried and dead-lettered instead of escaping to kafkajs.
+
+A second kafkajs detail: a consumer only tells Kafka "I'm alive" (a **heartbeat**) between messages. If it's silent for the 30-second session timeout, Kafka decides it died and hands its partitions to another replica. Five tries that each wait for a 10-second query timeout already take longer than that. So `withRetry()` has a `beforeWait` hook, the consumer sends a heartbeat there before every wait, and `loadMessagingSettings()` refuses retry settings whose longest wait is over 10 seconds. If the heartbeat itself fails (the group is rebalancing), that error goes back to kafkajs unchanged, because kafkajs knows how to rejoin the group.
 
 ### What a code review found
 
@@ -480,6 +484,16 @@ Before this step, every test passed. A careful review still found real bugs. Eac
 9. **A race in the end-to-end test.** The query service reads three topics, and Kafka doesn't order messages across topics, so a view can say `CANCELLED` before `PaymentFailed` has been projected. The test waited for "status is no longer PENDING" and then checked the payment status. **Fix:** wait until _every_ field the test checks has arrived.
 10. **Migrations that ran on every start.** `migrate()` executed every `.sql` file each time a service started, relying on `IF NOT EXISTS`. That breaks as soon as a migration isn't safe to repeat, such as an `UPDATE` that sets prices. **Fix:** a `schema_migrations` table records which files have run, so each runs exactly once, inside one transaction, under a Postgres advisory lock so replicas starting together take turns. **Consequence:** a migration that has shipped is never edited. You add a new numbered file instead, which is why prices arrived as `002_add_prices.sql`.
 11. **A coverage gate that couldn't fail.** `jest.config.js` set coverage thresholds, but its file globs were written from the repository root (`services/*/src/**/*.ts`), while Jest matches them against each workspace's own `src/` folder. So Jest measured 0 of 0 lines, printed `Unknown%`, and let every threshold pass. **Fix:** globs relative to each workspace's `src/`, thresholds raised to what the tests really reach, and a CI step that fails if coverage ever measures 0 lines. **Lesson:** make every safety net fail once on purpose, to prove it can.
+
+#### What the second review found
+
+A second review, after all the checks above were green, still found five bugs. None of them could fail a test that already existed, which is why reviews and tests complement each other:
+
+1. **A timeout counted as a bug.** The pool sets `statement_timeout`, so a database that is merely slow raises SQLSTATE `57014`. `classifyFailure()` didn't list it, so a slow minute dead-lettered healthy events. **Fix:** `57014` is now an infrastructure failure.
+2. **Shutdown that stopped waiting.** The relay's timer stored each tick's promise so shutdown could wait for it, but a tick that was skipped (the previous one was still running) replaced it with an already-finished promise. **Fix:** only a tick that really starts a batch records itself. The new test fails on the old code.
+3. **A blank setting became 0.** `Number('')` is `0`, so `DECLINE_ABOVE_CENTS=` with no value meant "decline every payment". **Fix:** numeric settings must be written as plain numbers, and blank, `0x10` or `1e3` stop the service at startup.
+4. **New event types were dead-lettered.** The docs promised that old consumers ignore new event types, but `parseEvent()` rejected them first. **Fix:** the tolerant reader above.
+5. **Retries outlasted Kafka's patience.** See the heartbeat paragraph above.
 
 ### Tests and coverage
 
@@ -498,12 +512,16 @@ Hooks are a convenience, not a guarantee (`git commit --no-verify` skips them), 
 
 Why insist on a message format? Because a tool can then work out the next version number by itself, following **semantic versioning** (MAJOR.MINOR.PATCH):
 
-| Commits since the last release                                 | Next version (from 1.4.2) |
-| -------------------------------------------------------------- | ------------------------- |
-| only `fix:`                                                    | 1.4.3 (patch)             |
-| at least one `feat:`                                           | 1.5.0 (minor)             |
-| a `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer | 2.0.0 (major)             |
-| only `docs:`, `test:`, `ci:`, `refactor:`, `chore:`            | no release                |
+| Commits since the last release                                     | Next version (from 1.4.2) |
+| ------------------------------------------------------------------ | ------------------------- |
+| `fix:`, `perf:` or `build:` (a dependency or the image), no `feat` | 1.4.3 (patch)             |
+| at least one `feat:`                                               | 1.5.0 (minor)             |
+| a `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer     | 2.0.0 (major)             |
+| only `docs:`, `test:`, `ci:`, `refactor:`, `style:`, `chore:`      | no release                |
+
+The last row is a choice, made in `release-please-config.json`: those types are `hidden`, so they stay out of the changelog, and they never make a release on their own. A docs-only change shouldn't publish four new images; such commits simply go out with the next real release. `build:` is visible on purpose, because Dependabot's dependency updates use it, and a patched dependency should reach users.
+
+Before 1.0.0, one rule changes, because `bump-minor-pre-major` is on: a breaking change bumps the minor version (0.3.1 → 0.4.0) instead of jumping to 1.0.0. Version 1.0.0 is where a project promises a stable API, so you decide when to reach it, with a `Release-As: 1.0.0` footer in a commit message.
 
 ### CI: what runs on every pull request
 
@@ -512,11 +530,12 @@ Why insist on a message format? Because a tool can then work out the next versio
 | Job           | What it does                                                                                                | What it catches                                                                                                        |
 | ------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `quality`     | format check, build, lint, type-check, unit tests with coverage (table in the run summary), lint-rule tests | everything `npm run check` catches                                                                                     |
-| `pr-title`    | checks the PR title is a Conventional Commit                                                                | bad changelog entries: with squash merging, the PR title becomes the commit message on `main`                          |
 | `docker-lint` | hadolint on the `Dockerfile`                                                                                | Dockerfile mistakes, such as unpinned packages or running as root                                                      |
 | `secrets`     | gitleaks over the whole git history                                                                         | a password or API key committed by accident, even one deleted in a later commit                                        |
 | `audit`       | `npm audit --omit=dev --audit-level=high`                                                                   | known vulnerabilities in the dependencies that ship                                                                    |
 | `e2e`         | starts the whole system with Docker Compose and runs `tests/e2e/e2e.mjs`                                    | wiring bugs (topic names, serialisation, migrations, networking), the whole saga, price tampering and input validation |
+
+A small workflow of its own, **`pr-title.yml`**, checks that the pull request title is a Conventional Commit: with squash merging, the title becomes the commit message on `main`, so a bad title means a bad changelog entry. It's separate from CI because it also runs when you edit the PR, so fixing a title clears the check at once without rebuilding everything.
 
 Three more workflows add security in depth:
 
@@ -530,7 +549,7 @@ Two habits in the workflow files are worth copying. Every workflow declares its 
 
 The first run of these checks, on the pull request that added them, went red twice. Both failures were worth having:
 
-- **`npm audit` found real vulnerabilities.** NestJS 10 depends on Express 4, whose `body-parser` and `multer` packages had known high-severity denial-of-service bugs. Our own code was fine: the risk came in through a dependency of a dependency. The fix was upgrading to NestJS 11, which uses Express 5. The unit tests, the end-to-end test and a smoke test of the real HTTP routes (validation, the 64 kB body limit, error codes) all passed unchanged. New advisories are published every week, so a package that was safe when you added it can be flagged later. That's why the audit runs on every pull request.
+- **`npm audit` found real vulnerabilities.** NestJS 10's HTTP adapter, `@nestjs/platform-express`, brought in Express 4, whose `body-parser` had a known high-severity denial-of-service bug, and an old `multer` (a file-upload library) with similar bugs. Our own code was fine: the risk came in through dependencies of a dependency. The fix was upgrading to NestJS 11, whose adapter uses Express 5 and a patched `multer`. (`npm ls multer` shows where a package comes from.) The unit tests, the end-to-end test and a smoke test of the real HTTP routes (validation, the 64 kB body limit, error codes) all passed unchanged. New advisories are published every week, so a package that was safe when you added it can be flagged later. That's why the audit runs on every pull request.
 - **One upgrade, two copies.** The first install after the upgrade put a separate copy of `@nestjs/common` inside every workspace, and a unit test failed: it watched one copy's `Logger` while the code logged through another. Nest compares some classes with `instanceof` and keeps settings such as the log level in static fields, so two copies can quietly disagree in production too. `npm dedupe` moved everything back to one copy at the root. After any framework upgrade, check that `npm ls @nestjs/common` lists a single version.
 - **Dependency review needs a setting.** It stopped with "Dependency review is not supported on this repository. Please ensure that Dependency graph is enabled", which is a repository setting, not a code problem (see [GitHub settings that complete the setup](#github-settings-that-complete-the-setup)).
 
@@ -541,13 +560,15 @@ The same run warned that several actions still ran on Node.js 20, which GitHub i
 `.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please):
 
 1. You merge pull requests into `main`, each with a Conventional title.
-2. release-please keeps a **release PR** open (titled like `chore(main): release 0.1.0`). It bumps the version in `package.json` and writes the new `CHANGELOG.md` entries from the commit messages, and it updates itself after every merge.
-3. When you merge the release PR, release-please creates the tag `v0.1.0` and a GitHub Release.
-4. The `publish` job then builds an image for each of the four services and pushes it to GitHub Container Registry (for example `ghcr.io/mitraker/event-driven-ecommerce-order-service:0.1.0` and `:latest`).
+2. release-please keeps a **release PR** open (titled like `chore(main): release 0.2.0`). It bumps the version in `package.json` and writes the new `CHANGELOG.md` entries from the commit messages, and it updates itself after every merge.
+3. When you merge the release PR, release-please creates the tag `v0.2.0` and a GitHub Release.
+4. The `publish` job then builds an image for each of the four services and pushes it to GitHub Container Registry (for example `ghcr.io/mitraker/event-driven-ecommerce-order-service:0.2.0` and `:latest`).
 
 Why does publishing live in the same workflow, instead of a separate one that runs `on: release`? Anything created with the default `GITHUB_TOKEN` doesn't trigger other workflows. It's GitHub's protection against infinite loops, so a release made by release-please would never start a second workflow. (Also note the lowercase `mitraker`: image names on GHCR must be lowercase, so the workflow lowercases the owner's name.)
 
-Two things to know about the first release:
+Three things to know about the first release:
+
+- **It is 0.1.0 because the config says so.** The manifest (`.release-please-manifest.json`) starts at `0.0.0`, which release-please reads as "never released". Its default first version is then 1.0.0, so `initial-version: "0.1.0"` in `release-please-config.json` picks 0.1.0 instead.
 
 - **The release PR gets no CI run.** release-please opens it with the same `GITHUB_TOKEN`, so the same loop protection applies. If branch protection requires checks, close and reopen the release PR (a reopen by a person does start the checks), or give release-please a personal access token through its `token` input.
 - **New images start private.** The first push to GHCR from a personal account creates a private package. To let anyone pull the images, open the package on your GitHub profile → Package settings → Change visibility.
@@ -584,6 +605,7 @@ Some protections live in the repository's settings on GitHub, not in files, so t
 2. **Settings → Actions → General → Workflow permissions:** tick "Allow GitHub Actions to create and approve pull requests". release-please needs it to open the release PR.
 3. **Settings → General → Pull Requests:** allow squash merging with the PR title as the commit message, and tick "Automatically delete head branches".
 4. **Settings → Security** (called "Code security" or "Advanced Security" depending on your account): turn on the dependency graph (the dependency review check needs it), private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
+5. **Settings → Moderation options → Reported content:** accept reports from all users. Then "Report content → Report to repository admins" reaches you privately, which is the reporting route `CODE_OF_CONDUCT.md` gives.
 
 ### Try it yourself
 
