@@ -14,6 +14,7 @@ describe('classifyFailure', () => {
   it.each([
     ['08006', 'connection failure'],
     ['57P01', 'admin shutdown'],
+    ['57014', 'statement timeout'],
     ['53300', 'too many connections'],
     ['40P01', 'deadlock detected'],
     ['40001', 'serialization failure'],

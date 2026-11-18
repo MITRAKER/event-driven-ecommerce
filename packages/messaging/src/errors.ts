@@ -14,8 +14,12 @@ import { InvalidEventError, InvariantError } from '@shop/contracts';
  */
 export type FailureKind = 'permanent' | 'infrastructure' | 'unknown';
 
-/** Postgres SQLSTATE classes that mean "the database is unavailable or busy, try again". */
-const TRANSIENT_SQLSTATE = /^(08|53|57P|40001|40P01)/;
+/**
+ * Postgres SQLSTATE codes that mean "the database is unavailable or busy, try again".
+ * 57014 (query_canceled) is what Postgres raises when the pool's statement_timeout
+ * (database.ts) cuts a query short: a slow or overloaded database, not a bad message.
+ */
+const TRANSIENT_SQLSTATE = /^(08|53|57P|57014|40001|40P01)/;
 /** Node network error codes. */
 const TRANSIENT_NETWORK = new Set([
   'ECONNREFUSED',
