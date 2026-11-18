@@ -47,10 +47,26 @@ describe('config', () => {
     expect(() => readInt({ N: '11' }, 'N', 1, [1, 10])).toThrow('must be in 1..10');
   });
 
+  // Number('') is 0, so without a format check a blank variable would quietly become 0.
+  it.each(['', '  ', '0x5', '5e0', 'Infinity', '7 days'])('readInt rejects %j', (raw) => {
+    expect(() => readInt({ N: raw }, 'N', 1, [0, 10])).toThrow('must be an integer');
+  });
+
+  it('readInt accepts surrounding spaces and negative numbers', () => {
+    expect(readInt({ N: ' 7 ' }, 'N', 1, [-10, 10])).toBe(7);
+    expect(readInt({ N: '-3' }, 'N', 1, [-10, 10])).toBe(-3);
+  });
+
   it('readNumber accepts decimals inside the range', () => {
     expect(readNumber({ P: '0.25' }, 'P', 0, [0, 1])).toBe(0.25);
+    expect(readNumber({ P: '1' }, 'P', 0, [0, 1])).toBe(1);
+    expect(readNumber({ P: '.5' }, 'P', 0, [0, 1])).toBe(0.5);
     expect(readNumber({}, 'P', 0.5, [0, 1])).toBe(0.5);
     expect(() => readNumber({ P: 'abc' }, 'P', 0, [0, 1])).toThrow('must be a number');
     expect(() => readNumber({ P: '1.5' }, 'P', 0, [0, 1])).toThrow('must be in 0..1');
+  });
+
+  it.each(['', '  ', '1.', '1.2.3', '5e-1', 'NaN'])('readNumber rejects %j', (raw) => {
+    expect(() => readNumber({ P: raw }, 'P', 0, [0, 1])).toThrow('must be a number');
   });
 });

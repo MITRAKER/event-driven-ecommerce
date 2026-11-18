@@ -10,10 +10,25 @@ export function readString(env: Env, name: string, fallback?: string): string {
   return value;
 }
 
+/**
+ * Number() alone is too forgiving for settings: it reads '' and '  ' as 0, so a blank
+ * `DECLINE_ABOVE_CENTS=` would quietly decline every payment, and it also accepts 0x1F, 1e3
+ * and Infinity. A numeric setting must be a plain base-10 number.
+ */
+const INTEGER = /^-?\d+$/;
+const DECIMAL = /^-?(\d+(\.\d+)?|\.\d+)$/; // 0.25, .25, 3 or -1.5
+
+/** The fallback if the variable is unset. Otherwise its value, or NaN if it isn't written as `format`. */
+function parseSetting(raw: string | undefined, fallback: number, format: RegExp): number {
+  if (raw === undefined) return fallback;
+  const text = raw.trim();
+  return format.test(text) ? Number(text) : Number.NaN;
+}
+
 /** Read an integer setting and check it is inside [min, max] (JPL rules 3 and 7). */
 export function readInt(env: Env, name: string, fallback: number, range: readonly [number, number]): number {
   const raw = env[name];
-  const value = raw === undefined ? fallback : Number(raw);
+  const value = parseSetting(raw, fallback, INTEGER);
   const [min, max] = range;
   invariant(Number.isInteger(value), `config: ${name} must be an integer, got ${JSON.stringify(raw)}`);
   invariant(value >= min && value <= max, `config: ${name} must be in ${min}..${max}, got ${value}`);
@@ -28,7 +43,7 @@ export function readNumber(
   range: readonly [number, number],
 ): number {
   const raw = env[name];
-  const value = raw === undefined ? fallback : Number(raw);
+  const value = parseSetting(raw, fallback, DECIMAL);
   const [min, max] = range;
   invariant(Number.isFinite(value), `config: ${name} must be a number, got ${JSON.stringify(raw)}`);
   invariant(value >= min && value <= max, `config: ${name} must be in ${min}..${max}, got ${value}`);
