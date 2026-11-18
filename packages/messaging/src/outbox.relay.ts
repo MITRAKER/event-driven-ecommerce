@@ -39,8 +39,8 @@ export function groupByTopic(
 export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(OutboxRelay.name);
   private timer: NodeJS.Timeout | undefined;
-  private running = false;
-  private inFlight: Promise<number> = Promise.resolve(0);
+  /** The batch being published right now, if any. Ticks never overlap, so there is at most one. */
+  private inFlight: Promise<number> | undefined;
 
   constructor(
     private readonly db: Database,
@@ -50,7 +50,9 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
 
   onApplicationBootstrap(): void {
     this.timer = setInterval(() => {
-      this.inFlight = this.tick();
+      // tick() never rejects (it logs the error and returns 0), and tick() itself records
+      // the batch it starts in inFlight, so there is nothing to keep here.
+      void this.tick();
     }, this.config.settings.outboxPollMs);
   }
 
@@ -60,10 +62,23 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
     await this.inFlight;
   }
 
-  /** Publish one batch. Public so tests can drive it directly. Returns how many rows were sent. */
+  /**
+   * Publish one batch. Public so tests can drive it directly. Returns how many rows were sent,
+   * or 0 at once if the previous tick is still running: a slow tick is never overlapped.
+   */
   async tick(): Promise<number> {
-    if (this.running) return 0; // don't overlap with a slow previous tick
-    this.running = true;
+    if (this.inFlight !== undefined) return 0;
+    // Only a tick that really starts a batch sets inFlight. A skipped tick returns above,
+    // so it can't replace the running batch and make shutdown stop waiting for it.
+    this.inFlight = this.publishOnce();
+    try {
+      return await this.inFlight;
+    } finally {
+      this.inFlight = undefined;
+    }
+  }
+
+  private async publishOnce(): Promise<number> {
     try {
       return await this.db.transaction(async (tx) => await this.publishBatch(tx));
     } catch (err) {
@@ -71,8 +86,6 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
         `publish failed, will retry next tick: ${err instanceof Error ? err.message : String(err)}`,
       );
       return 0;
-    } finally {
-      this.running = false;
     }
   }
 

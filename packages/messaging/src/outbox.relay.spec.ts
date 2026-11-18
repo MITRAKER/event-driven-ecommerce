@@ -91,4 +91,33 @@ describe('OutboxRelay.tick', () => {
     expect(tick).toHaveBeenCalledTimes(2);
     jest.useRealTimers();
   });
+
+  it('on shutdown, waits for a slow batch even after later ticks were skipped', async () => {
+    jest.useFakeTimers();
+    let releaseKafka = (): void => undefined;
+    const kafkaAnswers = new Promise<void>((resolve) => {
+      releaseKafka = resolve;
+    });
+    const sendBatch = jest.fn(async () => {
+      await kafkaAnswers;
+      return [];
+    });
+    const { relay, queries } = setup([row(1, 'orders')], sendBatch);
+    relay.onApplicationBootstrap();
+    await jest.advanceTimersByTimeAsync(500); // tick 1 starts and waits on Kafka
+    await jest.advanceTimersByTimeAsync(1_000); // ticks 2 and 3 see tick 1 running and skip
+    expect(sendBatch).toHaveBeenCalledTimes(1);
+
+    let stopped = false;
+    const stopping = relay.onModuleDestroy().then(() => {
+      stopped = true;
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(stopped).toBe(false); // still waiting for tick 1's batch
+
+    releaseKafka();
+    await stopping;
+    expect(queries.some((q) => q.sql.startsWith('UPDATE'))).toBe(true); // the batch was finished
+    jest.useRealTimers();
+  });
 });
