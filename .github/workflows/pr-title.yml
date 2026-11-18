@@ -1,0 +1,32 @@
+# Checks that the pull request title is a Conventional Commit.
+#
+# With squash merging, the PR title becomes the commit message on main, and release-please reads
+# those messages to pick the next version and write CHANGELOG.md.
+#
+# Why not a job in ci.yml? This workflow also runs when the PR is `edited`, so fixing a bad
+# title clears the check at once. CI doesn't listen to `edited`: a new title (or description)
+# shouldn't rebuild and retest everything.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+# Least privilege: the action only reads the pull request.
+permissions:
+  pull-requests: read
+
+# A newer edit or push to the same PR cancels the check that is still running for the old one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

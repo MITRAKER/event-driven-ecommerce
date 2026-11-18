@@ -1,5 +1,6 @@
-# Continuous integration: every check a pull request must pass before it is merged.
+# Continuous integration: the checks a pull request must pass before it is merged.
 # The jobs run side by side; only e2e waits for quality, because it is the slowest.
+# Also on every PR: pr-title.yml, codeql.yml and dependency-review.yml.
 name: CI
 
 on:
@@ -67,20 +68,6 @@ jobs:
           path: coverage/
           if-no-files-found: ignore
           retention-days: 14
-
-  pr-title:
-    # With squash merging, the PR title becomes the commit message on main, and release-please
-    # reads those messages to pick the next version. So the title must be a Conventional Commit.
-    name: Conventional PR title
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      pull-requests: read
-    steps:
-      - uses: amannn/action-semantic-pull-request@v5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker-lint:
     name: Lint the Dockerfile (hadolint)
