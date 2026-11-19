@@ -90,7 +90,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # the whole history: a secret deleted later is still in an old commit
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Report in the job log and summary only, so the token needs no write access.
