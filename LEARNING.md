@@ -519,7 +519,7 @@ Why insist on a message format? Because a tool can then work out the next versio
 | a `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer     | 2.0.0 (major)             |
 | only `docs:`, `test:`, `ci:`, `refactor:`, `style:`, `chore:`      | no release                |
 
-The last row is a choice, made in `release-please-config.json`: those types are `hidden`, so they stay out of the changelog, and they never make a release on their own. A docs-only change shouldn't publish four new images; such commits simply go out with the next real release. `build:` is visible on purpose, because Dependabot's dependency updates use it, and a patched dependency should reach users.
+The last row is a choice, made in `release-please-config.json`: those types are `hidden`, so they stay out of the changelog, and they never make a release on their own. A docs-only change shouldn't publish four new images; such commits simply go out with the next real release. `build:` is visible on purpose, because Dependabot uses it for updates to the runtime dependencies and the base image, and a patched dependency should reach users. Its updates to development tools (`chore(deps-dev): ...`) never ship in an image, so they don't make a release either.
 
 Before 1.0.0, one rule changes, because `bump-minor-pre-major` is on: a breaking change bumps the minor version (0.3.1 → 0.4.0) instead of jumping to 1.0.0. Version 1.0.0 is where a project promises a stable API, so you decide when to reach it, with a `Release-As: 1.0.0` footer in a commit message.
 
