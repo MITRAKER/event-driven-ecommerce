@@ -6,6 +6,35 @@ From version 0.1.0 on, this file is maintained by [release-please](https://githu
 
 <!-- release-please inserts each new version above the first heading that starts with a version number, so keep "0.0.0" at the start of the heading below. -->
 
+## 0.1.0 (2026-11-19)
+
+
+### Features
+
+* bring steps 3 to 5 to main (saga, CQRS read model, reliability and CI) ([e16edfc](https://github.com/MITRAKER/event-driven-ecommerce/commit/e16edfcc60bcd7221fa85efdc88cf0529e51d740))
+* **inventory-service:** check order prices against the catalog ([201bfd7](https://github.com/MITRAKER/event-driven-ecommerce/commit/201bfd71a8f8103ad57cc7ef2a023608674768ea))
+* **messaging:** run each migration exactly once ([529deff](https://github.com/MITRAKER/event-driven-ecommerce/commit/529deff8f8c601008558660ee36fbc42c2ea6e06))
+* **order-service:** bound orders and settle the saga under a row lock ([2a67181](https://github.com/MITRAKER/event-driven-ecommerce/commit/2a67181a524d56203b76a717e093da52657d2a6b))
+* **payment-service:** make the payment decision pure and configurable ([cc0c3d1](https://github.com/MITRAKER/event-driven-ecommerce/commit/cc0c3d136a87f1c557ee9f825b2b8d35b8c8fb1c))
+* professional repo standards, NASA/JPL rules and CI/CD (step 6) ([ea998ce](https://github.com/MITRAKER/event-driven-ecommerce/commit/ea998ce41d07123dfe1afee89e12b95cd4f4f021))
+
+
+### Bug Fixes
+
+* **deps:** upgrade NestJS to 11 to patch body-parser, multer, qs, file-type ([d59b851](https://github.com/MITRAKER/event-driven-ecommerce/commit/d59b85116ce57699daaa7b16beba8409294fad4e))
+* **messaging:** name the dead-letter producer's partitioner ([b9b1c15](https://github.com/MITRAKER/event-driven-ecommerce/commit/b9b1c15b12d3443624158ddd9b0cb747ca1ae114))
+* **messaging:** reject blank and malformed numeric settings ([6d8ac78](https://github.com/MITRAKER/event-driven-ecommerce/commit/6d8ac780d7a8a32a5da4768bf1c1b05d2e4495b9))
+* **messaging:** send the Kafka heartbeat before every try ([cb2b53b](https://github.com/MITRAKER/event-driven-ecommerce/commit/cb2b53be8b77b16c2bdeb011320265901639a744))
+* **messaging:** skip unknown event types and heartbeat Kafka during retries ([3a9d7a3](https://github.com/MITRAKER/event-driven-ecommerce/commit/3a9d7a329d62c305e59156a93d7368b5ad4a6e91))
+* **messaging:** treat a statement timeout as a database problem, not a bug ([0144350](https://github.com/MITRAKER/event-driven-ecommerce/commit/0144350e3e87ebceb6a7c3f75423bb2b0a7618cd))
+* **messaging:** wait for the running batch on shutdown even after skipped ticks ([7e71459](https://github.com/MITRAKER/event-driven-ecommerce/commit/7e7145979bf7cacb00e399b122904d67c4356a81))
+* **order-query-service:** lock-safe projection and exact stats ([15ad63d](https://github.com/MITRAKER/event-driven-ecommerce/commit/15ad63dfaab0899c8a044285a57e6527eaf525b6))
+
+
+### Build and Dependencies
+
+* enforce real coverage, test the lint rule, add git hooks ([edf8ede](https://github.com/MITRAKER/event-driven-ecommerce/commit/edf8eded29924f5f6e5a2f145532bdbb991f780a))
+
 ## 0.0.0 (before the first release)
 
 The project was built in six steps before the first release. Each step has a lesson in [`LEARNING.md`](LEARNING.md).
