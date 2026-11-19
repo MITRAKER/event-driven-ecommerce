@@ -196,12 +196,12 @@ describe('EventConsumer.receive', () => {
     expect(consumer.handled).toEqual([]);
   });
 
-  it('sends Kafka a heartbeat before each wait between retries', async () => {
-    const { consumer } = setup(); // 2 attempts, so one wait
+  it('sends Kafka a heartbeat before every try, so a long retry never goes silent', async () => {
+    const { consumer } = setup(); // 2 attempts
     consumer.failWith = new Error('a bug');
     const kafkaDelivery = delivery(JSON.stringify(created));
     await consumer.receive(kafkaDelivery);
-    expect(kafkaDelivery.heartbeat).toHaveBeenCalledTimes(1);
+    expect(kafkaDelivery.heartbeat).toHaveBeenCalledTimes(2);
   });
 
   it('hands a failed heartbeat back to kafkajs unchanged, so it rejoins the group and redelivers', async () => {

@@ -40,20 +40,20 @@ describe('withRetry', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it('awaits beforeWait before each wait, and stops at once if it throws', async () => {
+  it('awaits beforeTry before every try, and stops at once if it throws', async () => {
     const fn = jest.fn<Promise<never>, []>().mockRejectedValue(new Error('blip'));
-    const beforeWait = jest.fn<Promise<void>, []>().mockResolvedValue(undefined);
-    await expect(withRetry(fn, { attempts: 3, baseDelayMs: 1, sleep: noSleep, beforeWait })).rejects.toThrow(
+    const beforeTry = jest.fn<Promise<void>, []>().mockResolvedValue(undefined);
+    await expect(withRetry(fn, { attempts: 3, baseDelayMs: 1, sleep: noSleep, beforeTry })).rejects.toThrow(
       'blip',
     );
-    expect(beforeWait).toHaveBeenCalledTimes(2); // between tries 1-2 and 2-3, not after the last
+    expect(beforeTry).toHaveBeenCalledTimes(3); // before tries 1, 2 and 3
 
     fn.mockClear();
-    beforeWait.mockRejectedValue(new Error('rebalancing'));
-    await expect(withRetry(fn, { attempts: 3, baseDelayMs: 1, sleep: noSleep, beforeWait })).rejects.toThrow(
+    beforeTry.mockResolvedValueOnce(undefined).mockRejectedValue(new Error('rebalancing'));
+    await expect(withRetry(fn, { attempts: 3, baseDelayMs: 1, sleep: noSleep, beforeTry })).rejects.toThrow(
       'rebalancing',
     );
-    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledTimes(1); // try 1 ran, then the check before try 2 failed
   });
 
   it('refuses an unbounded or nonsensical retry budget', async () => {

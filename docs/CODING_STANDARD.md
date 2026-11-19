@@ -78,7 +78,7 @@ Both run until shutdown, and both stop cleanly in `onModuleDestroy`. What must b
 - ESLint `no-constant-condition` with `checkLoops: 'all'` (no `for (; true; )`) and `no-unmodified-loop-condition` (a loop whose condition variables never change).
 - Runtime bounds, each checked when the service starts or the function is called:
   - `withRetry()` in [`retry.ts`](../packages/messaging/src/retry.ts) asserts `1 <= attempts <= 10` (`MAX_ATTEMPTS`) with `invariant()` before it loops.
-  - `CONSUMER_RETRY_ATTEMPTS` must be in 1..10 and `OUTBOX_BATCH_SIZE` in 1..1000, and the longest wait between two retries must be at most 10 seconds, so the consumer's heartbeat reaches Kafka within its 30-second session timeout (`loadMessagingSettings()` in [`config.ts`](../packages/messaging/src/config.ts)).
+  - `CONSUMER_RETRY_ATTEMPTS` must be in 1..10 and `OUTBOX_BATCH_SIZE` in 1..1000, and the longest wait between two retries must be at most 10 seconds, so the heartbeat the consumer sends before every try reaches Kafka within its 30-second session timeout (`loadMessagingSettings()` in [`config.ts`](../packages/messaging/src/config.ts)).
   - The relay's `SELECT ... LIMIT $1`, followed by `invariant(rows.length <= batchSize, ...)` in [`outbox.relay.ts`](../packages/messaging/src/outbox.relay.ts).
   - kafkajs' own retries are configured with explicit limits in [`kafka.ts`](../packages/messaging/src/kafka.ts) (`retries: 8` with a `maxRetryTime` while connecting, `retries: 5` for producers).
 

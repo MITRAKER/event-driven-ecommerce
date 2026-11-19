@@ -52,8 +52,9 @@ export function readNumber(
 
 /**
  * The longest allowed wait between two tries of one message. The consumer sends Kafka a heartbeat
- * before each wait, and Kafka drops a consumer it hasn't heard from in 30 s (the session timeout),
- * so one wait plus one try must fit well inside that.
+ * before every try, and Kafka drops a consumer it hasn't heard from in 30 s (the session timeout).
+ * The longest silence is one try (a query may run up to the 10 s statement_timeout) plus one wait,
+ * so a wait of at most 10 s keeps it near 20 s, with room to spare.
  */
 const MAX_RETRY_WAIT_MS = 10_000;
 

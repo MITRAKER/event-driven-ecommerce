@@ -130,7 +130,7 @@ export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleD
    * - infrastructure (database down): throw, so kafkajs does not commit the offset and
    *   redelivers the message later. Healthy events are never dead-lettered just because
    *   a dependency had a bad minute.
-   * - Kafka refused a heartbeat between two tries (usually a rebalance): that error goes back
+   * - Kafka refused the heartbeat sent before a try (usually a rebalance): that error goes back
    *   to kafkajs unchanged, so it can rejoin the group. The message comes back later too.
    * If even the DLQ send fails, that error also reaches kafkajs. A message is never dropped silently.
    */
@@ -157,9 +157,11 @@ export abstract class EventConsumer implements OnApplicationBootstrap, OnModuleD
         onRetry: (n, err) => {
           this.logger.warn(`retry ${n} for ${event.eventType} ${event.eventId}: ${errorMessage(err)}`);
         },
-        // kafkajs only heartbeats between messages. Retrying one message can outlast the 30 s
-        // session timeout, and Kafka would then drop this consumer from the group mid-retry.
-        beforeWait: async () => {
+        // kafkajs only heartbeats between messages, and the tries of one message can outlast the
+        // 30 s session timeout: Kafka would drop this consumer from the group mid-retry. With a
+        // heartbeat before every try (kafkajs sends at most one per 3 s), the longest silence is
+        // one try plus one wait, or one try plus kafkajs's backoff before it redelivers.
+        beforeTry: async () => {
           try {
             await delivery.heartbeat();
           } catch (err) {
