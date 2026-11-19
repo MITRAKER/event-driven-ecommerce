@@ -109,8 +109,10 @@ The types we use:
 | `feat`     | A new feature                                       | `feat(order-service): let customers cancel a pending order` |
 | `fix`      | A bug fix                                           | `fix(messaging): run each migration exactly once`           |
 | `perf`     | A change that makes the code faster                 | `perf(order-query-service): index orders by customer`       |
+| `revert`   | Undoing an earlier change                           | `revert: let customers cancel a pending order`              |
 | `docs`     | Documentation only                                  | `docs: explain the outbox relay in lesson 2`                |
 | `refactor` | A code change that neither fixes a bug nor adds one | `refactor(inventory-service): extract decideReservation()`  |
+| `style`    | Formatting only, no change in behaviour             | `style: apply the new Prettier version`                     |
 | `test`     | Adding or fixing tests                              | `test(payment-service): cover the decline threshold`        |
 | `build`    | Build system, dependencies, Dockerfile              | `build(deps): bump pg from 8.13.1 to 8.14.0`                |
 | `ci`       | GitHub Actions workflows                            | `ci: run CodeQL every day`                                  |
@@ -120,7 +122,7 @@ The **scope** is optional. Good scopes are the workspace or area you changed: `c
 
 A `!` after the type (`feat(contracts)!: ...`) or a `BREAKING CHANGE:` footer marks a breaking change.
 
-Why a fixed format? Because the release tool reads it: `fix`, `perf` and `build` mean a patch release, `feat` a minor release, and a breaking change a major release (until 1.0.0, a minor one). `docs`, `refactor`, `test`, `ci`, `style` and `chore` don't make a release on their own, and stay out of the changelog. The tool writes the changelog from these messages, so write the description for a reader of the changelog.
+Why a fixed format? Because the release tool reads it: `fix`, `perf`, `build` and `revert` mean a patch release, `feat` a minor release, and a breaking change a major release (until 1.0.0, a minor one). `docs`, `refactor`, `test`, `ci`, `style` and `chore` don't make a release on their own, and stay out of the changelog. The tool writes the changelog from these messages, so write the description for a reader of the changelog.
 
 ## Git hooks
 

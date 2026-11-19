@@ -512,12 +512,12 @@ Hooks are a convenience, not a guarantee (`git commit --no-verify` skips them), 
 
 Why insist on a message format? Because a tool can then work out the next version number by itself, following **semantic versioning** (MAJOR.MINOR.PATCH):
 
-| Commits since the last release                                     | Next version (from 1.4.2) |
-| ------------------------------------------------------------------ | ------------------------- |
-| `fix:`, `perf:` or `build:` (a dependency or the image), no `feat` | 1.4.3 (patch)             |
-| at least one `feat:`                                               | 1.5.0 (minor)             |
-| a `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer     | 2.0.0 (major)             |
-| only `docs:`, `test:`, `ci:`, `refactor:`, `style:`, `chore:`      | no release                |
+| Commits since the last release                                                | Next version (from 1.4.2) |
+| ----------------------------------------------------------------------------- | ------------------------- |
+| `fix:`, `perf:`, `build:` (a dependency or the image) or `revert:`, no `feat` | 1.4.3 (patch)             |
+| at least one `feat:`                                                          | 1.5.0 (minor)             |
+| a `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer                | 2.0.0 (major)             |
+| only `docs:`, `test:`, `ci:`, `refactor:`, `style:`, `chore:`                 | no release                |
 
 The last row is a choice, made in `release-please-config.json`: those types are `hidden`, so they stay out of the changelog, and they never make a release on their own. A docs-only change shouldn't publish four new images; such commits simply go out with the next real release. `build:` is visible on purpose, because Dependabot uses it for updates to the runtime dependencies and the base image, and a patched dependency should reach users. Its updates to development tools (`chore(deps-dev): ...`) never ship in an image, so they don't make a release either.
 
