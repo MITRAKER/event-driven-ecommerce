@@ -27,7 +27,7 @@ Where to find the machinery:
 | HTTP body limit                     | `services/*/src/main.ts` (`app.useBodyParser('json', { limit: '64kb' })`)                                                   |
 | Everything at once, like CI         | `npm run check` (see [`CONTRIBUTING.md`](../CONTRIBUTING.md))                                                               |
 
-When the linter stops you, the message points to the rule below that explains why. Messages from our own checks (the banned-syntax list and the no-recursion rule in [`eslint.config.mjs`](../eslint.config.mjs)) start with `JPL-n:`. The other rules print ESLint's usual message with the rule's name, such as `complexity` or `max-depth`: each rule name is listed under the JPL rule it enforces.
+When the linter stops you, the message points to the rule below that explains why. Messages from our own checks (the banned-syntax list and the no-recursion rule in [`eslint.config.mjs`](../eslint.config.mjs)) start with `JPL-n:`. The other rules print ESLint's usual message with the rule's name, such as `complexity` or `max-depth`. The rules we set ourselves are each listed below, under the JPL rule they enforce; the rest come from typescript-eslint's `strictTypeChecked` and `stylisticTypeChecked` presets (rule 10).
 
 ---
 

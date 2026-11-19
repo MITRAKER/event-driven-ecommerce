@@ -1,5 +1,6 @@
 # Line endings: LF in the repository and in every checkout, on every OS.
 # Without this, git on Windows (core.autocrlf=true) checks files out with CRLF. The husky hooks
-# then fail ("/usr/bin/env: 'sh\r': No such file or directory") and `npm run format:check`
-# reports every file, because Prettier expects LF. `text=auto` leaves binary files alone.
+# then fail, because sh reads the \r at the end of each line as part of the command
+# (`npx lint-staged\r`), and `npm run format:check` reports every file, because Prettier
+# expects LF. `text=auto` leaves binary files alone.
 * text=auto eol=lf
