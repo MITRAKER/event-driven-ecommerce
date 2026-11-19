@@ -2,7 +2,7 @@
 #   docker build --build-arg SERVICE=order-service -t order-service .
 
 # ---- Stage 1: build (has the TypeScript compiler and dev dependencies; thrown away at the end)
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 
 # Copy only the package manifests first. Docker caches each step, so as long as no
@@ -35,7 +35,7 @@ RUN npm run build \
     services/*/src services/*/tsconfig*.json
 
 # ---- Stage 2: runtime (small image: no compiler, no test tools, no source code)
-FROM node:22-alpine
+FROM node:26-alpine
 ARG SERVICE
 ENV NODE_ENV=production SERVICE_NAME=${SERVICE}
 # Files stay owned by root and the process runs as `node`, so the app cannot modify its own code.
