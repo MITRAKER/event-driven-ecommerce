@@ -1,6 +1,29 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { invariant } from '@shop/contracts';
+import { PoolClient } from 'pg';
+import { MessagingConfig } from './config';
 import { Database } from './database';
 import { KafkaProducer } from './kafka';
+
+interface OutboxRow {
+  id: string; // BIGSERIAL comes back from pg as a string
+  topic: string;
+  message_key: string;
+  payload: unknown; // JSONB, already parsed by pg
+}
+
+/** Group rows by topic, keeping their order, so each topic gets one send call. */
+export function groupByTopic(
+  rows: readonly OutboxRow[],
+): { topic: string; messages: { key: string; value: string }[] }[] {
+  const byTopic = new Map<string, { key: string; value: string }[]>();
+  for (const row of rows) {
+    const list = byTopic.get(row.topic) ?? [];
+    list.push({ key: row.message_key, value: JSON.stringify(row.payload) });
+    byTopic.set(row.topic, list);
+  }
+  return [...byTopic].map(([topic, messages]) => ({ topic, messages }));
+}
 
 /**
  * The outbox relay: polls the outbox table and publishes rows to Kafka.
@@ -8,64 +31,89 @@ import { KafkaProducer } from './kafka';
  * Guarantee: at-least-once. If we crash after Kafka accepted the message but before
  * we mark the row published, the row is sent again on restart. That is why every
  * consumer must be idempotent (dedupe on eventId).
+ *
+ * The polling timer is the one loop that is meant to run forever (the JPL rules allow
+ * that for a scheduler). Each tick is bounded: at most `outboxBatchSize` rows.
  */
 @Injectable()
 export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(OutboxRelay.name);
-  private timer?: NodeJS.Timeout;
-  private running = false;
+  private timer: NodeJS.Timeout | undefined;
+  /** The batch being published right now, if any. Ticks never overlap, so there is at most one. */
+  private inFlight: Promise<number> | undefined;
 
-  constructor(private readonly db: Database, private readonly kafka: KafkaProducer) {}
+  constructor(
+    private readonly db: Database,
+    private readonly kafka: KafkaProducer,
+    private readonly config: MessagingConfig,
+  ) {}
 
-  onApplicationBootstrap() {
-    const interval = Number(process.env.OUTBOX_POLL_MS ?? 500);
-    this.timer = setInterval(() => void this.tick(), interval);
+  onApplicationBootstrap(): void {
+    this.timer = setInterval(() => {
+      // tick() never rejects (it logs the error and returns 0), and tick() itself records
+      // the batch it starts in inFlight, so there is nothing to keep here.
+      void this.tick();
+    }, this.config.settings.outboxPollMs);
   }
 
-  onModuleDestroy() {
+  /** Stop polling and let a tick that is already running finish its batch. */
+  async onModuleDestroy(): Promise<void> {
     clearInterval(this.timer);
+    await this.inFlight;
   }
 
-  /** Publish one batch. Public so tests can drive it directly. Returns how many rows were sent. */
-  async tick(batchSize = 100): Promise<number> {
-    if (this.running) return 0; // don't overlap with a slow previous tick
-    this.running = true;
+  /**
+   * Publish one batch. Public so tests can drive it directly. Returns how many rows were sent,
+   * or 0 at once if the previous tick is still running: a slow tick is never overlapped.
+   */
+  async tick(): Promise<number> {
+    if (this.inFlight !== undefined) return 0;
+    // Only a tick that really starts a batch sets inFlight. A skipped tick returns above,
+    // so it can't replace the running batch and make shutdown stop waiting for it.
+    this.inFlight = this.publishOnce();
     try {
-      return await this.db.transaction(async (client) => {
-        // FOR UPDATE SKIP LOCKED: if you run 3 replicas of this service, each relay
-        // grabs a different batch instead of all sending the same rows.
-        const { rows } = await client.query(
-          `SELECT id, topic, message_key, payload FROM outbox
-            WHERE published_at IS NULL
-            ORDER BY id
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED`,
-          [batchSize],
-        );
-        if (rows.length === 0) return 0;
-
-        // Group by topic so each topic gets one send call.
-        const byTopic = new Map<string, { key: string; value: string }[]>();
-        for (const r of rows) {
-          const list = byTopic.get(r.topic) ?? [];
-          list.push({ key: r.message_key, value: JSON.stringify(r.payload) });
-          byTopic.set(r.topic, list);
-        }
-        await this.kafka.producer.sendBatch({
-          topicMessages: [...byTopic].map(([topic, messages]) => ({ topic, messages })),
-        });
-
-        await client.query(`UPDATE outbox SET published_at = now() WHERE id = ANY($1)`, [
-          rows.map((r) => r.id),
-        ]);
-        this.logger.log(`published ${rows.length} event(s)`);
-        return rows.length;
-      });
-    } catch (err) {
-      this.logger.error(`publish failed, will retry: ${(err as Error).message}`);
-      return 0;
+      return await this.inFlight;
     } finally {
-      this.running = false;
+      this.inFlight = undefined;
     }
+  }
+
+  private async publishOnce(): Promise<number> {
+    try {
+      return await this.db.transaction(async (tx) => await this.publishBatch(tx));
+    } catch (err) {
+      this.logger.error(
+        `publish failed, will retry next tick: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    }
+  }
+
+  private async publishBatch(tx: PoolClient): Promise<number> {
+    const batchSize = this.config.settings.outboxBatchSize;
+    // FOR UPDATE SKIP LOCKED: if you run 3 replicas of this service, each relay grabs a
+    // different batch instead of all of them sending the same rows.
+    const { rows } = await tx.query<OutboxRow>(
+      `SELECT id, topic, message_key, payload FROM outbox
+        WHERE published_at IS NULL
+        ORDER BY id
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED`,
+      [batchSize],
+    );
+    invariant(rows.length <= batchSize, `outbox query returned ${rows.length} rows, limit was ${batchSize}`);
+    if (rows.length === 0) return 0;
+
+    await this.kafka.producer.sendBatch({ topicMessages: groupByTopic(rows) });
+
+    const updated = await tx.query(`UPDATE outbox SET published_at = now() WHERE id = ANY($1)`, [
+      rows.map((r) => r.id),
+    ]);
+    invariant(
+      updated.rowCount === rows.length,
+      `marked ${updated.rowCount} of ${rows.length} rows published`,
+    );
+    this.logger.log(`published ${rows.length} event(s)`);
+    return rows.length;
   }
 }

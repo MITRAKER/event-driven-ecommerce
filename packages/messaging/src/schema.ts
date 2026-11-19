@@ -1,5 +1,11 @@
 /** Tables every service needs for reliable messaging. All statements are idempotent. */
 export const MESSAGING_TABLES_SQL = `
+-- Which of this service's migration files have run (each runs exactly once).
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  name        TEXT        PRIMARY KEY,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Transactional outbox: events waiting to be published to Kafka.
 -- Written in the SAME transaction as the business change, so both happen or neither does.
 CREATE TABLE IF NOT EXISTS outbox (

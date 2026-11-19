@@ -1,5 +1,5 @@
-import { PoolClient } from 'pg';
 import { EventEnvelope } from '@shop/contracts';
+import { PoolClient } from 'pg';
 
 /**
  * Claim an event for processing inside the current transaction.
@@ -8,10 +8,10 @@ import { EventEnvelope } from '@shop/contracts';
  * Because the claim and the business change share one transaction, either both
  * are saved or neither is: a crash mid-handler means the event is retried cleanly.
  */
-export async function claimEvent(client: PoolClient, event: EventEnvelope): Promise<boolean> {
-  const res = await client.query(
+export async function claimEvent(tx: PoolClient, event: EventEnvelope): Promise<boolean> {
+  const result = await tx.query(
     `INSERT INTO processed_events (event_id, event_type) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [event.eventId, event.eventType],
   );
-  return res.rowCount === 1;
+  return result.rowCount === 1;
 }

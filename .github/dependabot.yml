@@ -1,0 +1,39 @@
+# Dependabot opens small weekly update PRs. The commit-message prefixes make their titles
+# Conventional Commits (e.g. "build(deps): bump pg from 8.13.1 to 8.14.0"), so they pass
+# the PR-title check and land in the right CHANGELOG section. Runtime dependencies and the
+# base image use build, which makes a release. Development tools use chore(deps-dev) and
+# GitHub Actions use ci: they never ship in an image, so they don't make a release.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+      prefix-development: chore
+      include: scope
+    # One PR for runtime dependencies and one for tooling, instead of one PR per package.
+    groups:
+      production-dependencies:
+        dependency-type: production
+      development-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # The node:22-alpine base image in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+      include: scope

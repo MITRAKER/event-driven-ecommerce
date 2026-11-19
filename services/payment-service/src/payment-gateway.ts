@@ -1,15 +1,37 @@
-export type ChargeResult = { ok: true } | { ok: false; reason: string };
+import { invariant, Limits } from '@shop/contracts';
+import { PaymentSettings } from './payment-config';
 
-/** Anything over this amount is declined, so you can trigger the failure path on purpose. */
-export const DECLINE_ABOVE_CENTS = Number(process.env.DECLINE_ABOVE_CENTS ?? 100_000); // $1,000
+export type ChargeResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 /**
- * A fake card processor. Deterministic by default (so the demo and tests are repeatable),
- * with an optional random failure rate to simulate flaky real-world payments.
+ * A fake card processor, written as a pure function (the "functional core"): it reads no
+ * environment and does no I/O. Its settings are passed in, and so is the dice roll, which makes
+ * even the random failures repeatable in a test.
+ *
+ * Deterministic by default (so the demo and tests are repeatable): only amounts above
+ * `declineAboveCents` are declined. A `failureRate` above 0 adds random declines on top,
+ * to simulate flaky real-world payments.
  */
-export function charge(amountCents: number, random: () => number = Math.random): ChargeResult {
-  if (amountCents > DECLINE_ABOVE_CENTS) return { ok: false, reason: 'card declined: amount over limit' };
-  const failureRate = Number(process.env.PAYMENT_FAILURE_RATE ?? 0);
-  if (random() < failureRate) return { ok: false, reason: 'card declined: random failure' };
+export function charge(
+  amountCents: number,
+  settings: PaymentSettings,
+  random: () => number = Math.random,
+): ChargeResult {
+  // Money is whole cents, never a float (0.1 + 0.2 !== 0.3), and never more than the contract allows.
+  invariant(
+    Number.isInteger(amountCents) && amountCents >= 0 && amountCents <= Limits.maxOrderTotalCents,
+    `charge: amount must be a whole number of cents in 0..${Limits.maxOrderTotalCents}, got ${amountCents}`,
+  );
+  if (amountCents > settings.declineAboveCents) {
+    return { ok: false, reason: 'card declined: amount over limit' };
+  }
+  // Check what the injected function returns (JPL rule 7): a broken random source returning NaN
+  // or 1 would approve every charge whatever the failure rate says, and a negative one would
+  // decline them all.
+  const roll = random();
+  invariant(roll >= 0 && roll < 1, `charge: random() must return a number in [0, 1), got ${roll}`);
+  if (roll < settings.failureRate) {
+    return { ok: false, reason: 'card declined: random failure' };
+  }
   return { ok: true };
 }

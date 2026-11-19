@@ -1,34 +1,131 @@
+# Continuous integration: the checks a pull request must pass before it is merged.
+# The jobs run side by side; only e2e waits for quality, because it is the slowest.
+# Also on every PR: pr-title.yml, codeql.yml and dependency-review.yml.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# Least privilege: the automatic GITHUB_TOKEN can only read the code, unless a job asks for more.
+permissions:
+  contents: read
+
+# A new push to the same branch or PR cancels the run for the outdated commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  unit:
-    name: Build and unit tests
+  quality:
+    name: Format, build, lint, typecheck, unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
       - run: npm ci
+      - run: npm run format:check
       - run: npm run build
-      - run: npm test
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:cov
+      - run: npm run test:tools
+      - name: Coverage summary
+        if: always()
+        run: |
+          file=coverage/coverage-summary.json
+          if [ ! -f "$file" ]; then
+            echo "No $file, skipping the coverage table."
+            exit 0
+          fi
+          {
+            echo "### Unit test coverage"
+            echo ""
+            echo "| Metric | Covered | Total | % |"
+            echo "| --- | ---: | ---: | ---: |"
+            for metric in statements branches functions lines; do
+              jq -r --arg m "$metric" \
+                '.total[$m] | "| \($m) | \(.covered) | \(.total) | \(.pct)% |"' "$file"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Jest lets every threshold pass when it measured 0 lines (it prints "Unknown%"),
+          # for example after a bad collectCoverageFrom glob. A gate that can't fail is no gate.
+          if ! jq -e '.total.lines.total > 0' "$file" > /dev/null; then
+            echo "::error file=jest.config.js::Coverage measured 0 lines: collectCoverageFrom matches no source file."
+            exit 1
+          fi
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  docker-lint:
+    name: Lint the Dockerfile (hadolint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # gitleaks lists the commits of a PR through the API
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the whole history: a secret deleted later is still in an old commit
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Report in the job log and summary only, so the token needs no write access.
+          GITLEAKS_ENABLE_COMMENTS: false
+
+  audit:
+    name: npm audit (production dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # --omit=dev: only what ships in the images. --audit-level=high: fail on high or critical.
+      - run: npm audit --omit=dev --audit-level=high
 
   e2e:
     name: End-to-end (Kafka + Postgres + all services)
+    needs: quality
     runs-on: ubuntu-latest
-    needs: unit
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - run: docker compose up -d --build
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      # --wait returns once every health check passes (each service's GET /health).
+      - run: docker compose up -d --build --wait --wait-timeout 300
       - run: node tests/e2e/e2e.mjs
       - name: Service logs
         if: always()
         run: docker compose logs --no-color order-service inventory-service payment-service order-query-service
-      - run: docker compose down -v
+      - name: Stop and remove everything
         if: always()
+        run: docker compose down -v
