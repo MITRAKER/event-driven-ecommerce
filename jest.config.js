@@ -1,6 +1,7 @@
 /**
  * One Jest run for the whole monorepo, so coverage is measured and enforced in one place.
- * Each workspace keeps its own "jest" block in package.json (used by `npm test -w <name>`).
+ * Each workspace keeps its own "jest" block in package.json (used by `npm test -w <name>`), which
+ * takes its transforms from jest.preset.js.
  * @type {import('jest').Config}
  */
 module.exports = {

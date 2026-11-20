@@ -26,8 +26,7 @@
     "rxjs": "^7.8.1"
   },
   "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
+    "preset": "../../../jest.preset.js",
     "rootDir": "src"
   }
 }

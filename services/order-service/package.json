@@ -28,8 +28,7 @@
     "ts-jest": "^29.2.5"
   },
   "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
+    "preset": "../../../jest.preset.js",
     "rootDir": "src"
   }
 }
