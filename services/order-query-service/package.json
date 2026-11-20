@@ -22,7 +22,7 @@
     "@types/jest": "^30.0.0",
     "@types/pg": "^8.11.10",
     "jest": "^30.5.2",
-    "ts-jest": "^29.2.5"
+    "ts-jest": "^29.4.15"
   },
   "jest": {
     "preset": "ts-jest",
