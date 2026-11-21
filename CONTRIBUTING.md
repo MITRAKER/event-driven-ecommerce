@@ -139,7 +139,7 @@ Hooks are a convenience, not a guarantee (`git commit --no-verify` skips them), 
 2. Branch from `main`, and run `npm run check` before you push.
 3. **Fill in the template** ([`.github/pull_request_template.md`](.github/pull_request_template.md)): what changed and why, how you tested it, and the checklist.
 4. **Use a Conventional Commit as the PR title**, for example `fix(inventory-service): release stock in sku order`. Pull requests are squash-merged and the PR title becomes the commit message on `main`, so it ends up in the changelog. CI checks the title.
-5. **CI must be green**: the quality checks, the end-to-end test and the security scans. A reviewer from [`CODEOWNERS`](.github/CODEOWNERS) approves, and the PR is squash-merged.
+5. **CI must be green**: the quality checks, the end-to-end test and the security scans. A reviewer from [`CODEOWNERS`](.github/CODEOWNERS) approves, and the PR is squash-merged. The exception is a stack of pull requests built on one another: merge those in order with **Create a merge commit**, because after a squash merge the next one would conflict.
 6. If the change alters behaviour, update the docs in the same PR: `README.md`, the relevant lesson in `LEARNING.md`, and `contracts/events/README.md` for event changes.
 
 ## How releases work

@@ -9,9 +9,9 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@nestjs/common": "^11.2.10",
-    "@nestjs/core": "^11.2.10",
-    "@nestjs/platform-express": "^11.2.10",
+    "@nestjs/common": "^12.5.0",
+    "@nestjs/core": "^12.5.0",
+    "@nestjs/platform-express": "^12.5.0",
     "@shop/contracts": "1.0.0",
     "@shop/messaging": "1.0.0",
     "pg": "^8.13.1",
@@ -25,8 +25,7 @@
     "ts-jest": "^29.4.15"
   },
   "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
+    "preset": "../../../jest.preset.js",
     "rootDir": "src"
   }
 }

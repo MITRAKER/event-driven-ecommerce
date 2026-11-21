@@ -9,8 +9,7 @@
     "test": "jest"
   },
   "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
+    "preset": "../../../jest.preset.js",
     "rootDir": "src"
   }
 }
