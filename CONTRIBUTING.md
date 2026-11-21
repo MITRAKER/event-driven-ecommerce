@@ -6,7 +6,7 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Pl
 
 ## Prerequisites
 
-- **Node.js 22.22.1 or newer.** The exact major version is in [`.nvmrc`](.nvmrc), so `nvm use` picks it up. `package.json` declares the same range in `engines`.
+- **Node.js 26 or newer.** The exact major version is in [`.nvmrc`](.nvmrc), so `nvm use` picks it up. `package.json` declares the same range in `engines`.
 - **Docker** with Docker Compose v2 (`docker compose ...`), for Kafka (Redpanda), Postgres and the end-to-end test.
 - **git**.
 
