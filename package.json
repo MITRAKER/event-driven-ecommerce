@@ -9,7 +9,7 @@
     "url": "https://github.com/MITRAKER/event-driven-ecommerce.git"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.22.1"
   },
   "workspaces": [
     "packages/*",
@@ -46,17 +46,17 @@
     "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
     "@eslint/js": "^10.0.1",
-    "@types/jest": "^29.5.14",
-    "@types/node": "^22.9.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.20.5",
     "eslint": "^10.15.0",
     "eslint-plugin-jest": "^29.17.1",
     "globals": "^17.14.0",
     "husky": "^9.1.7",
-    "jest": "^29.7.0",
-    "lint-staged": "^16.4.0",
+    "jest": "^30.5.2",
+    "lint-staged": "^17.6.1",
     "prettier": "^3.10.1",
     "ts-jest": "^29.4.15",
-    "typescript": "^5.6.3",
+    "typescript": "~6.0.3",
     "typescript-eslint": "^8.73.0"
   }
 }
