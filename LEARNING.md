@@ -564,13 +564,13 @@ The same run warned that several actions still ran on Node.js 20, which GitHub i
 3. When you merge the release PR, release-please creates the tag `v0.2.0` and a GitHub Release.
 4. The `publish` job then builds an image for each of the four services and pushes it to GitHub Container Registry (for example `ghcr.io/mitraker/event-driven-ecommerce-order-service:0.2.0` and `:latest`).
 
-Why does publishing live in the same workflow, instead of a separate one that runs `on: release`? Anything created with the default `GITHUB_TOKEN` doesn't trigger other workflows. It's GitHub's protection against infinite loops, so a release made by release-please would never start a second workflow. (Also note the lowercase `mitraker`: image names on GHCR must be lowercase, so the workflow lowercases the owner's name.)
+Why does publishing live in the same workflow, instead of a separate one that runs `on: release`? A release created with the default `GITHUB_TOKEN` doesn't trigger other workflows. It's GitHub's protection against infinite loops, so a release made by release-please would never start a second workflow. (Also note the lowercase `mitraker`: image names on GHCR must be lowercase, so the workflow lowercases the owner's name.)
 
 Three things to know about the first release:
 
 - **It is 0.1.0 because the config says so.** The manifest (`.release-please-manifest.json`) starts at `0.0.0`, which release-please reads as "never released". Its default first version is then 1.0.0, so `initial-version: "0.1.0"` in `release-please-config.json` picks 0.1.0 instead.
 
-- **The release PR gets no CI run.** release-please opens it with the same `GITHUB_TOKEN`, so the same loop protection applies. If branch protection requires checks, close and reopen the release PR (a reopen by a person does start the checks), or give release-please a personal access token through its `token` input.
+- **The release PR's checks wait for your approval.** release-please opens and updates it with the same `GITHUB_TOKEN`. Since June 2026, GitHub creates the workflow runs for a pull request made by `github-actions[bot]` but holds them until someone with write access approves them ([GitHub's changelog](https://github.blog/changelog/2026-06-11-bot-created-pull-requests-can-run-workflows-if-approved/)), so generated code can't start workflows that may see secrets on its own. Before that change they didn't run at all, and a release PR could be merged without CI. Once the release PR is up to date, approve its workflows on the pull request page, wait for green, then merge it.
 - **New images start private.** The first push to GHCR from a personal account creates a private package. To let anyone pull the images, open the package on your GitHub profile → Package settings → Change visibility.
 
 #### A supply-chain lesson: why there's no image scanner
