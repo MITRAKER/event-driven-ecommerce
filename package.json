@@ -1,6 +1,6 @@
 {
   "name": "event-driven-ecommerce",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Event-driven e-commerce backend: Kafka, transactional outbox, saga with compensation, CQRS (TypeScript/NestJS)",
   "license": "MIT",
@@ -43,14 +43,11 @@
     ]
   },
   "devDependencies": {
-    "@babel/plugin-transform-dynamic-import": "^7.29.7",
-    "@babel/plugin-transform-modules-commonjs": "^7.29.14",
     "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
     "@eslint/js": "^10.0.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^26.6.6",
-    "babel-plugin-transform-import-meta": "^2.3.3",
     "eslint": "^10.15.0",
     "eslint-plugin-jest": "^29.17.1",
     "globals": "^17.14.0",
