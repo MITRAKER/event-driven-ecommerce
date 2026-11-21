@@ -62,7 +62,7 @@ services:
       retries: 30
 
   # Each service's health check calls GET /health, which runs SELECT 1 against its database.
-  # node:22-alpine has no curl, but busybox provides wget.
+  # node:26-alpine has no curl, but busybox provides wget.
   order-service:
     <<: *service
     build: { context: ., args: { SERVICE: order-service } }

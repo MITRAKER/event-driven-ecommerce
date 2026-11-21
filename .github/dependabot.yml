@@ -36,7 +36,7 @@ updates:
       prefix: ci
       include: scope
 
-  # The node:22-alpine base image in the Dockerfile.
+  # The node:26-alpine base image in the Dockerfile.
   - package-ecosystem: docker
     directory: /
     schedule:

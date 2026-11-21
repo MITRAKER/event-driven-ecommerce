@@ -9,7 +9,7 @@
     "url": "https://github.com/MITRAKER/event-driven-ecommerce.git"
   },
   "engines": {
-    "node": ">=22.22.1"
+    "node": ">=26"
   },
   "workspaces": [
     "packages/*",
@@ -47,7 +47,7 @@
     "@commitlint/config-conventional": "^21.2.4",
     "@eslint/js": "^10.0.1",
     "@types/jest": "^30.0.0",
-    "@types/node": "^22.20.5",
+    "@types/node": "^26.6.6",
     "eslint": "^10.15.0",
     "eslint-plugin-jest": "^29.17.1",
     "globals": "^17.14.0",

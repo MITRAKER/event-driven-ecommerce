@@ -4,7 +4,7 @@
 [![CodeQL](https://github.com/MITRAKER/event-driven-ecommerce/actions/workflows/codeql.yml/badge.svg)](https://github.com/MITRAKER/event-driven-ecommerce/actions/workflows/codeql.yml)
 [![Coding standard: NASA/JPL Power of Ten](https://img.shields.io/badge/coding%20standard-NASA%2FJPL%20Power%20of%20Ten-0B3D91)](docs/CODING_STANDARD.md)
 [![TypeScript: strict](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.base.json)
-[![Node.js >= 22.22.1](https://img.shields.io/badge/node-%3E%3D22.22.1-339933?logo=node.js&logoColor=white)](.nvmrc)
+[![Node.js >= 26](https://img.shields.io/badge/node-%3E%3D26-339933?logo=node.js&logoColor=white)](.nvmrc)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
