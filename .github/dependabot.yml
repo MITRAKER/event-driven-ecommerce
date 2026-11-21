@@ -20,6 +20,13 @@ updates:
         dependency-type: production
       development-dependencies:
         dependency-type: development
+    ignore:
+      # Until ts-jest and typescript-eslint support TypeScript 7 (their peer ranges stop below 7).
+      - dependency-name: typescript
+        versions: ['>=7']
+      # @types/node majors follow the Node.js runtime (.nvmrc, Dockerfile), which we upgrade on purpose.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /
