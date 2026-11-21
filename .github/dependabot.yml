@@ -27,6 +27,12 @@ updates:
       # @types/node majors follow the Node.js runtime (.nvmrc, Dockerfile), which we upgrade on purpose.
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
+      # Until Jest supports Babel 8. Jest 30 runs on Babel 7, and the Babel 8 versions of the
+      # plugins in jest.preset.js need @babel/core 8, so npm can't install both (ERESOLVE).
+      - dependency-name: '@babel/*'
+        update-types: ['version-update:semver-major']
+      - dependency-name: babel-plugin-transform-import-meta
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /
