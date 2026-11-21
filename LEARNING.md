@@ -555,6 +555,17 @@ The first run of these checks, on the pull request that added them, went red twi
 
 The same run warned that several actions still ran on Node.js 20, which GitHub is retiring, so the first-party ones moved to their Node.js 24 versions (`actions/checkout@v5`, `actions/setup-node@v5`, `actions/upload-artifact@v6` and `github/codeql-action@v4`). Dependabot proposes the rest as their publishers release them.
 
+#### What the first dependency updates taught
+
+Dependabot's first round brought eight pull requests. The five GitHub Actions updates were green and could be merged as they were. The other three failed or hid a problem, and each one is a reason updates arrive as small pull requests that must pass CI:
+
+- **TypeScript 7 broke the tools built on the compiler.** TypeScript 7 is the compiler rewritten in Go, and its npm package no longer exposes the JavaScript API that `ts-jest` and `typescript-eslint` load. Neither accepts 7 in its peer range yet, so `npm ci` refused to install (`ERESOLVE`). We took TypeScript 6.0, the newest version both accept, and an `ignore` rule in `dependabot.yml` holds 7 back until they support it. TypeScript 6 also deprecates `"moduleResolution": "node"`, so `tsconfig.base.json` now says `"bundler"`, and the compiled JavaScript is byte for byte the same.
+- **A lockfile can quietly switch off a lint rule.** `eslint-plugin-jest` borrows its `unbound-method` rule from `@typescript-eslint/eslint-plugin`, and when it can't load that package, the rule does nothing, without an error. Dependabot's lockfile had moved the package into another package's folder, where `eslint-plugin-jest` couldn't find it, so lint stayed green while it checked less. Rebuilding the lockfile fixed it. Lockfile changes deserve a look too, and `npm ls <package>` shows where a package sits.
+- **CI tested a different Node.js than the image.** The Node.js 26 image passed every check, because the end-to-end test runs in the images. But the build, the lint and the unit tests take their Node.js version from `.nvmrc`, which still said 22. A runtime version lives in several places (the `Dockerfile`, `.nvmrc`, `engines` and `@types/node`), and Dependabot only updates the first. They all say 26 now, and `dependabot.yml` skips major `@types/node` updates, because those should move with the runtime, on purpose.
+- **NestJS 12 ships only ES modules.** The services compile to CommonJS and load Nest with `require()`, which Node.js can do for ES modules since 22.12, so they run as before. Jest's own module loader can't, and every test suite that loaded Nest failed with "Cannot use import statement outside a module". `jest.preset.js` now has Babel compile just the `@nestjs` files to CommonJS for the tests. And as with NestJS 11, the update put a copy of Nest in every workspace until `npm dedupe` brought it back to one.
+
+These three pull requests all change `package.json` and the lockfile, so each was built on top of the one before. They are merged in that order (development tools, then Node.js 26, then NestJS 12) with **Create a merge commit**. A squash merge writes new commits, and the next pull request would then conflict on every line both had changed.
+
 ### CD: from merge to a published release
 
 `.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please):
@@ -624,6 +635,7 @@ Exercises:
 6. Read `docs/CODING_STANDARD.md` and pick one rule that our tools can't fully check. How would you check it in a code review?
 7. Pin one third-party action to a commit SHA: on the action's GitHub page, open the release you want, copy the full commit SHA, and write `uses: owner/action@<sha> # v1.2.3`. The comment keeps it readable, and Dependabot updates both.
 8. Break the coverage gate the way it was once broken: in `jest.config.js`, change `'**/*.ts'` to `'services/*/src/**/*.ts'` and run `npm run test:cov`. Jest prints `Unknown%` and still passes. Then put it back.
+9. Look for duplicate packages: run `npm ls @nestjs/common` and `npm ls @typescript-eslint/eslint-plugin`. Each should list one version, with every other line ending in `deduped`.
 
 ### Interview talking points
 
@@ -633,3 +645,4 @@ Exercises:
 - "All the tests passed, and a review still found a price-tampering bug. Now every price the client sends is checked against the service that owns the catalog."
 - "Releases are automated from Conventional Commits, and every third-party tool in the pipeline is a supply-chain risk I can explain and limit."
 - "Our coverage gate once measured nothing and passed anyway. Now CI proves the gate measures real code, and I make every safety net fail once on purpose."
+- "A green dependency update still gets a review. One lockfile quietly turned off a lint rule, and once CI tested a different Node.js version than the image we shipped."
