@@ -81,7 +81,7 @@ jobs:
           SERVICE: ${{ matrix.service }}
         run: echo "name=ghcr.io/${OWNER,,}/event-driven-ecommerce-${SERVICE}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           build-args: SERVICE=${{ matrix.service }}
