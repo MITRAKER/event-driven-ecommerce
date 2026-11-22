@@ -38,11 +38,14 @@ RUN npm run build \
 FROM node:26-alpine
 ARG SERVICE
 ENV NODE_ENV=production SERVICE_NAME=${SERVICE}
-# Files stay owned by root and the process runs as `node`, so the app cannot modify its own code.
+# Files stay owned by root and the process runs as the image's `node` user, so the app cannot
+# modify its own code.
 COPY --from=build /app /app
 # The service finds its SQL migrations relative to this directory.
 WORKDIR /app/services/${SERVICE}
-USER node
+# The `node` user by number (uid and gid 1000 in the official images): Kubernetes' runAsNonRoot
+# check can only verify a numeric user, and hadolint flags a name (DL3066).
+USER 1000:1000
 # Run node directly, not `npm start`: Docker sends SIGTERM to the main process, and npm does not
 # reliably pass it on, so the graceful shutdown would never run. PORT, DATABASE_URL and
 # KAFKA_BROKERS come from docker-compose.yml (or your orchestrator).

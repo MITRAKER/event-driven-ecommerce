@@ -324,7 +324,7 @@ Unit tests prove each piece of logic. Only an end-to-end test proves the _wiring
 
 - **Multi-stage build:** the build stage installs every dependency, compiles TypeScript, then removes the dev dependencies (`npm prune --omit=dev`) and the TypeScript sources. The runtime stage copies only what is left: compiled JavaScript, SQL migrations, `package.json` files and production `node_modules`. The image is smaller and has less attack surface (no compiler, no test tools).
 - **`npm ci --ignore-scripts`:** installs exactly what `package-lock.json` says, and doesn't run any package's install scripts during the build (a common way for a malicious dependency to run code).
-- **`USER node`:** don't run containers as root.
+- **`USER 1000:1000`:** don't run containers as root. The number is the image's `node` user. Its name would work too, but Kubernetes' `runAsNonRoot` check can only verify a numeric user, so hadolint asks for the number (rule DL3066).
 - **`CMD ["node", "dist/main.js"]`, not `npm start`:** when Docker stops a container it sends `SIGTERM` to the main process. If that process is npm, the signal isn't reliably passed on to Node, so the graceful shutdown (stop consumers, finish the relay tick, close the pool) may never run, and Docker kills the process after 10 seconds.
 - **Two Kafka listeners:** containers reach the broker as `redpanda:9092` and your laptop as `localhost:19092`. Kafka tells clients which address to reconnect to (the _advertised_ address), so a single address can't work for both. This is the #1 "why can't I connect to Kafka in Docker" problem.
 - **Health checks + `depends_on: condition: service_healthy`:** services wait for Kafka and Postgres to be ready, not just started. Each service's own health check calls `GET /health`, which runs `SELECT 1` against its database, so `docker compose up --wait` returns only when the whole system can actually serve requests.
@@ -575,13 +575,13 @@ These three pull requests all change `package.json` and the lockfile, so each wa
 3. When you merge the release PR, release-please creates the tag `v0.2.0` and a GitHub Release.
 4. The `publish` job then builds an image for each of the four services and pushes it to GitHub Container Registry (for example `ghcr.io/mitraker/event-driven-ecommerce-order-service:0.2.0` and `:latest`).
 
-Why does publishing live in the same workflow, instead of a separate one that runs `on: release`? Anything created with the default `GITHUB_TOKEN` doesn't trigger other workflows. It's GitHub's protection against infinite loops, so a release made by release-please would never start a second workflow. (Also note the lowercase `mitraker`: image names on GHCR must be lowercase, so the workflow lowercases the owner's name.)
+Why does publishing live in the same workflow, instead of a separate one that runs `on: release`? A release created with the default `GITHUB_TOKEN` doesn't trigger other workflows. It's GitHub's protection against infinite loops, so a release made by release-please would never start a second workflow. (Also note the lowercase `mitraker`: image names on GHCR must be lowercase, so the workflow lowercases the owner's name.)
 
 Three things to know about the first release:
 
 - **It is 0.1.0 because the config says so.** The manifest (`.release-please-manifest.json`) starts at `0.0.0`, which release-please reads as "never released". Its default first version is then 1.0.0, so `initial-version: "0.1.0"` in `release-please-config.json` picks 0.1.0 instead.
 
-- **The release PR gets no CI run.** release-please opens it with the same `GITHUB_TOKEN`, so the same loop protection applies. If branch protection requires checks, close and reopen the release PR (a reopen by a person does start the checks), or give release-please a personal access token through its `token` input.
+- **The release PR's checks wait for your approval.** release-please opens and updates it with the same `GITHUB_TOKEN`. Since June 2026, GitHub creates the workflow runs for a pull request made by `github-actions[bot]` but holds them until someone with write access approves them ([GitHub's changelog](https://github.blog/changelog/2026-06-11-bot-created-pull-requests-can-run-workflows-if-approved/)), so generated code can't start workflows that may see secrets on its own. Before that change they didn't run at all, and a release PR could be merged without CI. Once the release PR is up to date, approve its workflows on the pull request page, wait for green, then merge it.
 - **New images start private.** The first push to GHCR from a personal account creates a private package. To let anyone pull the images, open the package on your GitHub profile → Package settings → Change visibility.
 
 #### A supply-chain lesson: why there's no image scanner
