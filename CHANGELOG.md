@@ -6,6 +6,16 @@ From version 0.1.0 on, this file is maintained by [release-please](https://githu
 
 <!-- release-please inserts each new version above the first heading that starts with a version number, so keep "0.0.0" at the start of the heading below. -->
 
+## [0.1.1](https://github.com/MITRAKER/event-driven-ecommerce/compare/v0.1.0...v0.1.1) (2026-11-22)
+
+
+### Build and Dependencies
+
+* **deps:** restore NestJS 12 in the lockfile after the 0.1.0 release ([6c644ce](https://github.com/MITRAKER/event-driven-ecommerce/commit/6c644ce1bdc96c723cd7cd681eb97505f46d9993))
+* **deps:** restore NestJS 12 in the lockfile after the 0.1.0 release ([f713d69](https://github.com/MITRAKER/event-driven-ecommerce/commit/f713d69705d5f836d1f9c116e2ed4933fc7226d2))
+* run the image as uid 1000 and bump hadolint-action to 3.5.0 ([5ce0b55](https://github.com/MITRAKER/event-driven-ecommerce/commit/5ce0b558659b63f69d0d590c255808d3a06416f5))
+* run the image as uid 1000, which hadolint 2.15 asks for ([75e0c5a](https://github.com/MITRAKER/event-driven-ecommerce/commit/75e0c5ac64ac2b32b70bcd635163dde7686c79cf))
+
 ## 0.1.0 (2026-11-21)
 
 
